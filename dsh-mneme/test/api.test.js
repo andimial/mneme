@@ -673,8 +673,9 @@ test("GET /api/dsh-mneme/features returns empty overrides and effective config d
   // issue #24 块1 新增 graphAnchoringEnabled/graphSeedCap/graphCascadeDepth、
   // 块2 新增 graphWeightEnabled/graphWeightDelta、块3 新增 graphInjectHint/graphInjectBudget、
   // 块4 新增 graphPassiveConfirm、
-  // issue #339 新增 dreamMergeGuard）
-  assert.equal(Object.keys(data.effective).length, 59 + 3 + 2 + 1 + 2 + 2 + 2 + 1 + 1 + 1 + 2 + 1 + 2 + 1 + 3 + 2 + 2 + 1 + 1);
+  // issue #339 新增 dreamMergeGuard、
+  // issue #164 A2 新增 sensitiveScanEnabled（顶层扁平键，走 configFlagValue 默认分支））
+  assert.equal(Object.keys(data.effective).length, 59 + 3 + 2 + 1 + 2 + 2 + 2 + 1 + 1 + 1 + 2 + 1 + 2 + 1 + 3 + 2 + 2 + 1 + 1 + 1);
   assert.equal(data.effective.dreamSkipInvalid, true);
   assert.equal(data.effective.allowCrossTypeMerge, false);
   assert.equal(data.effective.dreamMergeGuard, false);
@@ -697,6 +698,8 @@ test("GET /api/dsh-mneme/features returns empty overrides and effective config d
   // #254：写入准入两个键都默认关（默认路径零行为变化），面板可逐项启停。
   assert.equal(data.effective["writeAdmission.enabled"], false);
   assert.equal(data.effective["writeAdmission.enforce"], false);
+  // #164 A2：密钥/PII 判据自己的闸，同样默认关（#332 的行为逐字节保留）。
+  assert.equal(data.effective.sensitiveScanEnabled, false);
   // 新增字符串 / URL / 枚举键
   assert.equal(data.effective.localEmbedModel, "Xenova/bge-small-zh-v1.5");
   assert.equal(data.effective.ollamaBaseUrl, "http://localhost:11434");
@@ -751,6 +754,9 @@ test("PUT /api/dsh-mneme/features round-trips nested, string, url and enum keys"
     // 这里往返一次就是钉这件事的（计数锁只钉数量，钉不住值）。
     "writeAdmission.enabled": true,
     "writeAdmission.enforce": true,
+    // #164 A2：顶层扁平键（不是对象子字段），与上面两个点号键走同一条往返；
+    // 它的默认值断言在计数锁那一条里，这里钉的是「PUT 存进去、effective 读得回」。
+    sensitiveScanEnabled: true,
     embedProvider: "local",
     ollamaBaseUrl: "http://127.0.0.1:11434",
     dreamProvider: "  siliconflow  ",
@@ -765,6 +771,7 @@ test("PUT /api/dsh-mneme/features round-trips nested, string, url and enum keys"
     "llmAudit.enabled": false,
     "writeAdmission.enabled": true,
     "writeAdmission.enforce": true,
+    sensitiveScanEnabled: true,
     embedProvider: "local",
     ollamaBaseUrl: "http://127.0.0.1:11434",
     dreamProvider: "siliconflow",
@@ -775,6 +782,7 @@ test("PUT /api/dsh-mneme/features round-trips nested, string, url and enum keys"
   assert.equal(data.effective["llmAudit.enabled"], false);
   assert.equal(data.effective["writeAdmission.enabled"], true);
   assert.equal(data.effective["writeAdmission.enforce"], true);
+  assert.equal(data.effective.sensitiveScanEnabled, true);
   assert.equal(data.effective.embedProvider, "local");
   assert.equal(data.effective.ollamaBaseUrl, "http://127.0.0.1:11434");
   assert.equal(data.effective.dreamProvider, "siliconflow");

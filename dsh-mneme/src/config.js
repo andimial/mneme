@@ -651,6 +651,25 @@ export const Config = z.object({
     enforce: z.boolean().default(false)
   }).default({}),
 
+  // --- #164 A2: secret / PII scan at the write boundary ----------------------
+  // 写入边界的密钥 / PII 判据（src/sensitive-scan.js）自身的闸。与 writeAdmission
+  // 的 enabled 分开是有意的：那一个管 #254 第 1 级的空白 / 噪声判据，本键管 A2 这
+  // 一类判据，两批的误杀面差一个量级（空白 / 噪声没有解释空间，邮箱 / 手机号有），
+  // 绑在同一个开关上就没法单独观察 A2 的命中分布。
+  //
+  // 分层必须写清：判据的唯一调用点在 #254 第 1 级的闸门里（write-admission.js 的
+  // firstLevelHit），闸门不走第 1 级就没人来调这个扫描器。所以本键是「闸门内这一批
+  // 判据参不参与」，不是一条能独立跑的链路——单开本键就是零行为变化：
+  //   writeAdmission.enabled 关                  → 第 1 级整个不跑，本键开也没用
+  //   enabled 开 + 本键关                        → 只跑空白 / 噪声那一批
+  //   enabled 开 + 本键开 + enforce 关           → 命中留审计，写入照常（观察档）
+  //   enabled 开 + 本键开 + enforce 开           → 命中即拒绝
+  // 默认关 = 只计量那一阶段的行为逐字节保留（#332 合并时 sensitiveScan 就是 null）。
+  // #164 的「默认仅告警、拦截 opt-in」落在 enforce 上：命中落一条审计
+  // （metadata.deny.kind）但照常写入，真要拦得 enabled 与 enforce 同时开。
+  // 也走 feature_flags（FEATURE_FLAG_BOOLEANS 白名单），面板可启停=线上回滚开关。
+  sensitiveScanEnabled: z.boolean().default(false),
+
   // --- recall evaluation: test-result storage (v0.4.6, 方案 B) --------------
   // Separate retrieval evaluation snapshots from the production recall audit.
   // When false (default) evaluateRetrieval still computes precision/recall/mrr
