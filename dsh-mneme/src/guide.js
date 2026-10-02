@@ -38,9 +38,21 @@ export const TOOL_GUIDE = {
     " Use this when the task depends on earlier decisions, preferences, or project history that is not already in context, " +
     "or to look for a newer memory behind one that seems stale. " +
     "Skip it for facts you can read directly from the repository.",
+  // 第二句（#249 第二批：「能力说明里没提 scope」）：TOOL_GUIDE.memory_save 此前只
+  // 讲「该不该写」，没讲「写给谁看」——而 memory_save 的 scope 参数是**必填面**，
+  // 漏填的后果是单向的。所以这里给的是一条判断规则而不是一句免责声明：不确定就别填
+  // （未标注 = 处处可见，NULL 恒可见，是安全的默认）；标了 scope 才在多 scope 检索里
+  // 付出代价。那句代价必须按实写：A2 软隔离是「他 scope 降权 ×0.5 但保留可见」
+  // （service.js），只有 A3 `strictScope`（默认关）才真的硬过滤。写「静默消失」既不
+  // 符合默认配置下的行为，也撞上「拒绝可解释、不静默丢弃」的口径（#254 验收第 2 条），
+  // 会让模型以为标注有它实际没有的隐私效果。
+  // 写进工具描述而不是总则：它是 memory_save 单工具的判据，总则那五条讲的是
+  // 「何时查 / 何时写 / 何时 no-op」，加第六条会把单工具语义抬成全局纪律。
   memory_save:
     " Save only durable, cross-session value (a preference, a decision with its rationale, an engineering constraint, " +
-    "a pitfall with its root cause). Trivial single-turn work does not belong here, and when unsure, do not save."
+    "a pitfall with its root cause). Trivial single-turn work does not belong here, and when unsure, do not save. " +
+    "If a memory only holds for one workspace or one agent, declare workspace_scope / agent_scope; otherwise leave both out. " +
+    "An unscoped memory is visible everywhere; a scoped one is filtered or downranked outside its scope."
 };
 
 /**
