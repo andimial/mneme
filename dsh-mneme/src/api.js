@@ -143,6 +143,8 @@ export function createApi(ctx, service, settings, commands, embedder, semantic =
     "llmAudit.enabled": ["llmAudit", "enabled"],
     "writeAdmission.enabled": ["writeAdmission", "enabled"],
     "writeAdmission.enforce": ["writeAdmission", "enforce"]
+    // sensitiveScanEnabled（#164 A2）是顶层扁平键，不需要进这张表——走 configFlagValue
+    // 的默认分支即可。
   };
   function configFlagValue(key) {
     const path = NESTED_FLAG_PATHS[key];
