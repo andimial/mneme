@@ -6,6 +6,7 @@
 
 - **daemon 向量检索（PR2，#363）**：`dsh-mneme-serve` 的 `/search` 接入完整语义管线——embedder/reranker 装配与 boot 自动回填从 `index.js` **纯搬移**至 `src/semantic.js`（宿主与 daemon 共用同一份，调用时序契约原样；`backfillMissingEmbeddings` 经 index.js barrel 再出口，测试调用方零改动），daemon 侧新增 `createVectorIndex` 接线与 `--embed` 参数：`local`（默认，自管 runtime/嵌入模型缺失时经 `provisionRuntime` download 档自动取件，可用 `DSH_MNEME_RUNTIME_TARBALL_DIR`/`DSH_MNEME_RUNTIME_MIRROR` 换离线/镜像来源；失败降级关键词并打可操作日志）、`ollama`、`openai`（读宿主面板 vector-config）、`off`。向量轴有注入假 embedder 的回归锁；`createServeRuntime` 因此转为 async、语义键默认值在 `daemonSemanticCfg` 逐键锚定 config.js。
 - **独立服务 daemon（`dsh-mneme-serve`，#363）**：mneme 现在能在 DSH 宿主之外常驻——`src/serve.js` 的 `createServeRuntime` 用最小装配（store → settings → mirror → service → maintenance → standalone API，每步锚定 index.js 装配行号）把数据面跑成独立进程，第三方集成（网页端桥接等）不必为挂载记忆库而保持 DSH 开机。第一期刻意无 LLM：巩固（autoDream）与蒸馏结构性不在 daemon 内，这是与宿主「单写者」的机械保证，不靠用户自觉。token 与 DSH 面板/CLI 共用同一 kv 凭证，端口/主机解析链与外部访问一致；`createStandaloneApi` 新增 `strictPort` 选项——daemon 的配置端口被占即报错退出而非顺延（第三方把 URL 写死，静默换端口等于坏），不传该选项的宿主旁路行为不变。`/search` 照常落 recall_runs，第三方检索的复用统计不缺数。多进程共存（daemon 与宿主同库互写互读）有专门回归锁；已知限制（双进程去重竞态、镜像双写、版本偏斜）见 docs/DAEMON.md。
+- **`injectHeatEnabled`（issue #218 / E5 效用考卷，opt-in 默认关）**：注入侧 heat 拆出独立开关——E5 实测 heat 乘进注入排序在真实年龄混合下饿死老约束（现行量级 ≡ 拟合参数，importance-only 遵从 +12.7pp），默认关后 `heatEnabled` 开启时注入乘数恒 1（与 heat 关闭逐字节一致），显式开启恢复旧序；召回侧时钟与 sleep 降级联判不受影响。
 
 ## 🧹 工程
 
