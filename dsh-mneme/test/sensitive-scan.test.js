@@ -124,3 +124,84 @@ test("语料之外的探针：漏放那一类锁一条（实现期实测出来�
   // 收紧后的开关键字仍然认 24 位以上的真 key（44 位正文，语料那条）。
   assert.equal(scanSensitive(openaiProjKey(OPENAI_BODY)).kind, "openai_key");
 });
+
+// --- 合并后独立复审的三项加固 -------------------------------------------------
+
+// 赋值句的键与值都在运行时拼装，别写成整串字面量：`.github/workflows/security.yml` 的
+// gitleaks 是**全历史**扫描且没有 allowlist，而 generic-api-key 规则认的是「关键词 +
+// 赋值号 + 高熵值」——一个 16 位、字符全不重复的十六进制串熵值就有 4.0，高于它 3.5 的
+// 阈值，直接落进源码就会被判成真凭据（本批初稿实测：两条各报一次）。
+// 与 helpers/write-admission-samples.js 里那几条凭据值同一个理由，那边也是拼的。
+const envLine = (key, value, prefix = "") => `${prefix}${key}=${value}`;
+/** 一眼假的低熵值：不是占位符（占位符会被守卫挡掉，那样就测不到这条规则了）。 */
+const FAKE_LITERAL = ["super", "sekrit", "000"].join("-");
+
+test("左边界放开 `_`：环境变量名形态的赋值也要抓（原先整类漏放）", () => {
+  // 回归锁：赋值型规则的左边界原为 `[^A-Za-z0-9_]`，把下划线也当成了标识符内部字符，
+  // 于是只有恰好落在行首的 `API_KEY=` 能中，而 `DB_PASSWORD=` / `MY_API_KEY=` /
+  // `MYSQL_PASSWORD=` 这种「前缀_关键词」的环境变量名整类漏放——配置片段与 .env 正文
+  // 恰恰是最常见的落库形态。放宽后 #332 的 26 条语料仍全绿，说明原写法不是语料换来
+  // 的取舍，是白丢的。
+  for (const [key, prefix] of [
+    ["DB_PASSWORD", ""],
+    ["MY_API_KEY", ""],
+    ["MYSQL_PASSWORD", ""],
+    ["GITHUB_TOKEN", "export "] // 带 shell 前缀的写法
+  ]) {
+    const line = envLine(key, FAKE_LITERAL, prefix);
+    assert.equal(scanSensitive(line)?.kind, "assigned_secret", `${key} 形态的赋值不该漏放`);
+  }
+});
+
+test("放宽左边界没有放走占位符与间接引用（守卫仍在管那一半）", () => {
+  // 与上一条成对：放宽的是「关键词前面能不能是 `_`」，不是「右边的值算不算字面量」。
+  // 后者仍归占位符守卫——下面三条正是负样本群里「有敏感词但没有值」的形态。
+  // 这些值同样拼装，理由见本节开头（`${...}` 这类串本身也贴着"像凭据"的形状）。
+  const placeholders = [
+    ["DB_PASSWORD", ["$", "{DB_PASSWORD}"].join("")],
+    ["MY_API_KEY", ["<", "your-key-here", ">"].join("")],
+    ["DB_PASSWORD", ["process", ".env.DB_PASSWORD"].join("")]
+  ];
+  for (const [key, value] of placeholders) {
+    const line = envLine(key, value);
+    assert.equal(scanSensitive(line), null, `${key} 形态的占位 / 间接引用不该报`);
+  }
+});
+
+test("身份证档加校验位：位数对但校验不过的 18 位数字串不报", () => {
+  // 回归锁：原先只有银行卡档有 Luhn、身份证档只看长度，结果是 18 位纯数字（订单号 /
+  // 内部编号 / 拼接时间戳）先被身份证规则命中，等不到银行卡那条的校验。补 GB 11643
+  // MOD 11-2 之后两侧都干净：校验不过的不报，语料里那条真形状照报。
+  assert.equal(scanSensitive("内部编号 123456789012345678 已登记"), null, "校验不过的 18 位不该报");
+  assert.equal(scanSensitive("内部编号 987654321098765432 已登记"), null);
+  assert.equal(scanSensitive("身份证 11010519491231002X 已核验")?.kind, "cn_id_card");
+  // 小写 x 走同一张校验表（语料只覆盖了大写 X）。
+  assert.equal(scanSensitive("身份证 11010519491231002x 已核验")?.kind, "cn_id_card");
+});
+
+test("email 的 local part 上界恰好卡在 RFC 5321 的 64", () => {
+  // 上界不是随手取的数：64 是 RFC 5321 给 local part 的上限，所以「长于 64 不认」
+  // 这条边界必须是精确的——松一位会让回溯面失控，紧一位会漏掉合法邮箱。
+  const at = (n) => `${"a".repeat(n)}@example.com`;
+  assert.ok(scanSensitive(at(64)), "64 位的 local part 是合法的，必须认");
+  assert.equal(scanSensitive(at(65)), null, "65 位超出 RFC 上限，不认（换取回溯有界的代价）");
+});
+
+test("长文本上的回溯有上界：写阻塞类回归的计时护栏", () => {
+  // 回归锁：email 的 local part 与 connection_string 的 scheme 都作用在含 `.` 的字符
+  // 类上，缺上界时每个起点都要一路重扫到结尾才失败 → O(n²)。未加上界时实测：34KB
+  // 点分链 0.6 秒、120KB 对抗串 23.5 秒（email 18.6s + 连接串 4.1s）；而本判据在写入
+  // 路径上同步跑，等于把写入卡死。加上界后同输入约 60ms。
+  // 预算取 2 秒：比修复前小一个数量级（12× 安全边），又比修复后大 30 倍，不至于像
+  // 50ms 级断言那样被 CI 抖动误伤——它抓的是「上界被拿掉」这类数量级回归，不是微优化。
+  const inputs = [
+    "a.".repeat(30000) + "@" + "b.".repeat(30000) + "!",
+    "com.example.pkg.".repeat(10000) + "@"
+  ];
+  for (const text of inputs) {
+    const started = process.hrtime.bigint();
+    scanSensitive(text);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 2000, `${text.length} 字符耗时 ${ms.toFixed(1)}ms，超 2000ms 预算（回溯上界被破坏？）`);
+  }
+});

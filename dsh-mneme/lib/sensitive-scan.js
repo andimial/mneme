@@ -35,6 +35,9 @@
 //     就会把长度相近的订单号 / 内部编号吃进来，而 PII 这一档的误杀面已经比密钥大一档。
 //   - 银行卡号加 Luhn 校验：`0000000000000000`、`4111111111111112` 这类形状对但校验
 //     不过的串不报。少了这道校验，任何 16 位数字串（订单号、时间戳拼接）都会命中。
+//   - 身份证同样加校验位（GB 11643 / ISO 7064 MOD 11-2）：位数对但校验不过的 18 位
+//     数字串不报。原先只有银行卡有校验、身份证没有，结果是 18 位纯数字先被身份证规则
+//     命中，反倒绕过银行卡那条的 Luhn。
 //
 // 归一化：这里**不**用 content-hash.js 的 normalizeForHash。那套口径（NFKC → 小写 →
 // 去标点）是为「只差格式的两条写入是否同一件事」定的，判据要的是原串的形状——大小写
@@ -64,7 +67,12 @@ const SECRET_RULES = [
   // 可能有 `RSA` / `EC` / `OPENSSH`，所以中间那段是 [A-Z ]*。
   { kind: "private_key", label: "PEM private key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { kind: "jwt", label: "JSON Web Token", re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/ },
-  { kind: "connection_string", label: "credentials in URL", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/:@]{6,}@/ },
+  // scheme 与 userinfo 两段都加上界。scheme 那段的 `*` 作用在含 `.` 的字符类上，
+  // 一条长点分串（包名 / 路径 / 版本链）里每个起点都要一路回溯到结尾才发现没有
+  // `://` → 与 email 同源的 O(n²)（实测 120KB 对抗串里这条占 4.1 秒）。
+  // URL scheme 名本就短、`user:password` 也不会长到 64，上界只钉住回溯面，
+  // 真实连接串一条不少。
+  { kind: "connection_string", label: "credentials in URL", re: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,64}:[^\s/:@]{6,}@/ },
   // Stripe 排在通用 `sk-` 之前：`sk_live_…` 两条规则都吃，先到的那条决定 kind。
   // 只认 sk_live_（生产密钥）：sk_test_ 是公开测试密钥，报它是纯误杀。
   { kind: "stripe_key", label: "Stripe secret key", re: /\bsk_live_[A-Za-z0-9]{16,}\b/ },
@@ -79,7 +87,11 @@ const SECRET_RULES = [
     // alphabet——凭据值没有通用形状，能通用的只有「它不像占位符」。
     kind: "assigned_secret",
     label: "assigned credential literal",
-    re: /(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|secret|api[_-]?key|token)\b\s*[:=]\s*["']?([^\s"']{8,})/i,
+    // 左边界不能把 `_` 排除在外：环境变量名正是拿 `_` 当分隔符，排除它会让
+    // `DB_PASSWORD=` / `MY_API_KEY=` / `MYSQL_PASSWORD=` 整类漏放（只有恰好落在
+    // 行首的 `API_KEY=` 能中）。放宽后 #332 那套 26 条语料（含 12 条负样本）全绿，
+    // 说明原写法不是语料换来的取舍。挡误杀的是下面那道占位符守卫，不是这个边界。
+    re: /(?:^|[^A-Za-z0-9])(?:password|passwd|pwd|secret|api[_-]?key|token)\b\s*[:=]\s*["']?([^\s"']{8,})/i,
     // 占位符守卫：右边是尖括号占位、shell / 模板变量、环境变量读取、或一串 x / * / …
     // 时不算命中。少这道守卫，`password: <redacted>` 与 `token: ${TOKEN}` 都会被报，
     // 而它们正是「配置里该怎么写」的示例文本。
@@ -93,10 +105,15 @@ const PII_RULES = [
     label: "email address",
     // 先看 TLD 再看 `@`：反过来的 `(?:[A-Za-z]{2,}\.)+[A-Za-z]{2,}` 对
     // `a@b.c.d.e` 这类可以回溯出指数条路径。
-    re: /\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b/
+    // local part 的 `+` 必须加上界。该字符类含 `.`，所以一条长点分串（包名 / 路径 /
+    // 版本链）后跟一个 `@` 时，每个起点都要重扫到那个 `@` 才失败 → 整体 O(n²)。
+    // 实测 120KB 对抗串 23.5 秒里这条占 18.6 秒，34KB 点分链要 0.6 秒；本判据在写入
+    // 路径上同步跑，等于把写入阻塞住。64 是 RFC 5321 给 local part 的上限，加上界
+    // 不缩检测面——放弃的只是长于 64 的非法形状。
+    re: /\b[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b/
   },
   { kind: "cn_mobile", label: "mainland mobile number", re: /(?<!\d)1[3-9]\d{9}(?!\d)/ },
-  { kind: "cn_id_card", label: "mainland ID number", re: /(?<![0-9A-Za-z])\d{17}[\dXx](?![0-9A-Za-z])/ },
+  { kind: "cn_id_card", label: "mainland ID number", re: /(?<![0-9A-Za-z])\d{17}[\dXx](?![0-9A-Za-z])/, cnId: true },
   { kind: "bank_card", label: "payment card number", re: /(?<!\d)(?:\d{13,19})(?!\d)/, luhn: true }
 ];
 
@@ -124,6 +141,19 @@ function passesLuhn(value) {
   return sum % 10 === 0;
 }
 
+// 大陆身份证校验位（GB 11643 / ISO 7064 MOD 11-2）。与银行卡的 Luhn 同理：18 位
+// 数字串在项目记忆里很常见（订单号、内部编号、拼接时间戳），位数这个形状拦不住它们，
+// 而校验位是身份证自带的、零成本的第二道形状。权重序列与余数映射都是标准值，别改。
+const CN_ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+const CN_ID_CODES = "10X98765432";
+/** @param {string} value 命中串（17 位数字 + 校验位，校验位可为 X） */
+function passesCnId(value) {
+  if (!/^\d{17}[\dXx]$/.test(value)) return false;
+  let sum = 0;
+  for (let i = 0; i < 17; i++) sum += Number(value[i]) * CN_ID_WEIGHTS[i];
+  return CN_ID_CODES[sum % 11] === value[17].toUpperCase();
+}
+
 /**
  * 扫一段文本里的密钥 / PII。命中返回 `{kind, label}`、未命中返回 null，不抛。
  *
@@ -141,6 +171,7 @@ export function scanSensitive(value) {
     // 守卫只看捕获组：没有捕获组的规则天然没有守卫。
     if (rule.guard && !rule.guard(match[1] ?? "")) continue;
     if (rule.luhn && !passesLuhn(match[0])) continue;
+    if (rule.cnId && !passesCnId(match[0])) continue;
     return { kind: rule.kind, label: rule.label };
   }
   return null;
