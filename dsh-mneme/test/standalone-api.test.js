@@ -8,11 +8,11 @@ import { PACKAGE_VERSION } from "../src/version-check.js";
 import { Config, applyLightModePreset } from "../src/config.js";
 
 // Real HTTP server on an OS-assigned port (port: 0), driven with fetch.
-async function setup() {
+async function setup({ config = {}, embedder = null } = {}) {
   const store = createStore(":memory:");
-  const service = createService({ store, mirror: null, config: {} });
+  const service = createService({ store, mirror: null, config });
   const settings = createSettings(store.db);
-  const api = createStandaloneApi({ service, store, config: {}, settings, logger: null, port: 0 });
+  const api = createStandaloneApi({ service, store, config, settings, logger: null, port: 0, embedder });
   await api.ready;
   const base = `http://127.0.0.1:${api.port}`;
   const auth = { authorization: `Bearer ${api.token}` };
@@ -41,7 +41,7 @@ test("GET /health is open without a token; every other route 401s", async () => 
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
 
-    for (const path of ["/status", "/profile", "/rules", "/memories", "/memories/x", "/search?q=x"]) {
+    for (const path of ["/status", "/profile", "/rules", "/memories", "/memories/x", "/search?q=x", "/context"]) {
       const res = await fetch(`${base}${path}`);
       assert.equal(res.status, 401, `${path} requires a token`);
       assert.deepEqual(await res.json(), { error: "unauthorized" });
@@ -541,6 +541,162 @@ test("GET /search honors the occurred_at window", async () => {
     const hit = await (await fetch(`${base}/search?q=${encodeURIComponent("记忆星球")}&occurred_from=2026-03-01`, { headers: auth })).json();
     assert.equal(hit.items.length, 1);
     assert.equal(hit.items[0].title, "新事");
+  } finally {
+    close();
+  }
+});
+
+// --- GET /context（issue #370，#363 承诺）---------------------------------------
+
+/** /context 用例的省事入库：走 POST /memories，与第三方调用同路径。 */
+async function saveMemory(base, auth, body) {
+  const res = await fetch(`${base}/memories`, {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  assert.ok(res.status === 201 || res.status === 200, `save ${body.title} → ${res.status}`);
+  return res.json();
+}
+
+test("GET /search passes a declared scope through (strictScope hard wall on the search face too)", async () => {
+  // issue #370：searchMemories 本就收 scope，8790 此前没有入口——透传后第三方
+  // 声明身份，A2 软加权与 strictScope 硬过滤在检索面同样成立；不传参数行为
+  // 与既往逐字节一致（scopeFromSearchParams 返回 undefined → 不进 options）。
+  const { base, auth, close } = await setup({ config: { strictScope: true } });
+  try {
+    await saveMemory(base, auth, { type: "decision", title: "他域检索", content: "外部线索 abc", importance: 5, agent_scope: "other-agent" });
+
+    const scoped = await (await fetch(`${base}/search?q=${encodeURIComponent("外部线索")}&agent_scope=me`, { headers: auth })).json();
+    assert.ok(!scoped.items.some((m) => m.title === "他域检索"), "explicit foreign agent_scope row is hard-filtered");
+
+    const unscoped = await (await fetch(`${base}/search?q=${encodeURIComponent("外部线索")}`, { headers: auth })).json();
+    assert.ok(unscoped.items.some((m) => m.title === "他域检索"), "no scope declared → gate dormant, behavior unchanged");
+  } finally {
+    close();
+  }
+});
+
+test("GET /context returns the injection-shaped aggregate; empty q still serves the rule tier", async () => {
+  const { base, auth, settings, close } = await setup();
+  try {
+    settings.setProfile("我是后端工程师");
+    settings.setRules(["先验证再修改"]);
+    await saveMemory(base, auth, { type: "decision", title: "核心决策", content: "选定 SQLite 单文件库", importance: 5 });
+    await saveMemory(base, auth, { type: "preference", title: "默认中文", content: "回复默认用中文", importance: 4 });
+
+    const res = await fetch(`${base}/context`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    // 形状锁：四键响应——bridge 等调用方按这四个键渲染，漂移（加塞/漏带）在此变红。
+    assert.deepEqual(Object.keys(body).sort(), ["items", "pinnedCount", "profile", "rules"]);
+    assert.equal(body.profile, "我是后端工程师");
+    assert.deepEqual(body.rules, ["先验证再修改"]);
+    assert.equal(body.pinnedCount, 0, "pinnedInjectBudget 默认 0（opt-in 纪律，issue #370 取舍 3）");
+    const titles = body.items.map((m) => m.title);
+    assert.ok(titles.includes("核心决策") && titles.includes("默认中文"), "empty q → pure rule tier, high-importance rows still served");
+    for (const item of body.items) {
+      assert.ok(item.id && item.type && item.title && typeof item.content === "string" && Number.isInteger(item.importance));
+    }
+  } finally {
+    close();
+  }
+});
+
+test("GET /context threshold is an importance gate (not /search's similarity threshold)", async () => {
+  // 同名不同义锁（issue #370 点名的文档区分）：/context 的 threshold 走
+  // injectCandidates 的 importance 门（summary/preference 豁免），与相似度无关
+  // ——本用例全程无 embedder/向量，纯规则档即可验证。
+  const { base, auth, close } = await setup();
+  try {
+    await saveMemory(base, auth, { type: "decision", title: "低重要", content: "小事一桩", importance: 3 });
+    await saveMemory(base, auth, { type: "decision", title: "高重要", content: "大事记", importance: 5 });
+
+    const open = await (await fetch(`${base}/context`, { headers: auth })).json();
+    const openTitles = open.items.map((m) => m.title);
+    assert.ok(openTitles.includes("低重要") && openTitles.includes("高重要"), "default threshold=3 admits both");
+
+    const gated = await (await fetch(`${base}/context?threshold=4`, { headers: auth })).json();
+    const gatedTitles = gated.items.map((m) => m.title);
+    assert.ok(gatedTitles.includes("高重要"), "importance 5 survives threshold=4");
+    assert.ok(!gatedTitles.includes("低重要"), "importance 3 is gated out at threshold=4");
+  } finally {
+    close();
+  }
+});
+
+test("GET /context pins preference rows ahead when pinnedInjectBudget is on", async () => {
+  // #249 pin 池经 8790 透出。用 preference 而非 constraint：constraint 属编码
+  // 记忆，非编码查询被 codingGate 排除在候选池外，pin 池也够不着它。
+  const { base, auth, close } = await setup({ config: { pinnedInjectBudget: 2 } });
+  try {
+    await saveMemory(base, auth, { type: "preference", title: "pin-偏好", content: "永远先讲结论", importance: 5 });
+    await saveMemory(base, auth, { type: "decision", title: "普通决策", content: "先做 A 再做 B", importance: 5 });
+
+    const body = await (await fetch(`${base}/context`, { headers: auth })).json();
+    assert.equal(body.items[0].title, "pin-偏好", "pinned row leads the block");
+    assert.equal(body.pinnedCount, 1);
+  } finally {
+    close();
+  }
+});
+
+test("GET /context honors a declared scope under strictScope; undeclared stays unfiltered", async () => {
+  // scope 语义锁（issue #370）：声明身份 → strictScope 硬过滤按 isVisibleInScope
+  // 生效；不声明 → scope=null，门不触发（与宿主「会话身份取不到时两维为 null」
+  // 同构）。任一维声明而另一维缺省时，缺维按解析不到走 fail-closed。
+  const { base, auth, close } = await setup({ config: { strictScope: true } });
+  try {
+    await saveMemory(base, auth, { type: "decision", title: "他域决策", content: "别的 agent 的事", importance: 5, agent_scope: "other-agent" });
+    await saveMemory(base, auth, { type: "decision", title: "全域决策", content: "谁都可见", importance: 5 });
+
+    const declared = await (await fetch(`${base}/context?agent_scope=me`, { headers: auth })).json();
+    const declaredTitles = declared.items.map((m) => m.title);
+    assert.ok(!declaredTitles.includes("他域决策"), "explicit foreign agent_scope row is hard-filtered");
+    assert.ok(declaredTitles.includes("全域决策"));
+
+    const undeclared = await (await fetch(`${base}/context`, { headers: auth })).json();
+    const undeclaredTitles = undeclared.items.map((m) => m.title);
+    assert.ok(undeclaredTitles.includes("他域决策"), "no declared scope → no gate");
+  } finally {
+    close();
+  }
+});
+
+test("GET /context embeds the query via the injected embedder (wiring lock)", async () => {
+  // embedder 接线锁（issue #370）：createStandaloneApi 新增的可选 embedder 必须
+  // 真被 /context 用上——宿主与 daemon 传的都是 semantic 装配的同一实例。
+  const calls = [];
+  const fake = {
+    ready: true,
+    modelHash: "fake-hash-1",
+    dimension: 4,
+    embedSingle: async (text) => {
+      calls.push(text);
+      return [1, 0, 0, 0];
+    }
+  };
+  const { base, auth, close } = await setup({ embedder: fake });
+  try {
+    const res = await fetch(`${base}/context?q=${encodeURIComponent("语义查询")}`, { headers: auth });
+    assert.equal(res.status, 200);
+    await res.json();
+    assert.deepEqual(calls, ["语义查询"], "the route must hand the query to the injected embedder");
+  } finally {
+    close();
+  }
+});
+
+test("GET /context survives a throwing embedder (rule-tier degradation, never 500)", async () => {
+  const { base, auth, close } = await setup({
+    embedder: { ready: true, embedSingle: async () => { throw new Error("model offline"); } }
+  });
+  try {
+    await saveMemory(base, auth, { type: "decision", title: "降级存照", content: "嵌入挂了也要有注入", importance: 5 });
+    const res = await fetch(`${base}/context?q=任意`, { headers: auth });
+    assert.equal(res.status, 200, "embed failure must degrade to the rule tier");
+    const body = await res.json();
+    assert.ok(body.items.some((m) => m.title === "降级存照"));
   } finally {
     close();
   }

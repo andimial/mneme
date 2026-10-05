@@ -194,19 +194,51 @@ async function handlePutBody(res, service, logger, id, text) {
 }
 
 /**
+ * /context 的查询嵌入：best-effort，embedder 接口宽容与 searchMemories 同款
+ * （embedSingle 优先，兼容 embed-only 的 OpenAI 兼容客户端，issue #10）。
+ * 调用方负责 catch——嵌入失败降级规则档，绝不因此 500。
+ */
+async function embedQueryVector(embedder, q) {
+  const embedSingle = typeof embedder.embedSingle === "function"
+    ? embedder.embedSingle.bind(embedder)
+    : typeof embedder.embed === "function"
+      ? embedder.embed.bind(embedder)
+      : null;
+  if (!embedSingle) return undefined;
+  const vector = await embedSingle(q);
+  return Array.isArray(vector) && vector.length ? vector : undefined;
+}
+
+/**
+ * scope 查询参数（/context 与 /search 同口径，issue #370）：两参全缺 = 返回
+ * undefined（调用方不传 scope 走各自默认，行为与既往逐字节一致）；任一给出则
+ * 缺的一维按「解析不到」（null）走 isVisibleInScope 的 fail-closed——身份不明
+ * 的维度只见全局，不冒认，与宿主会话 scope 解析器同构。
+ */
+function scopeFromSearchParams(url) {
+  const agentScope = url.searchParams.get("agent_scope");
+  const workspaceScope = url.searchParams.get("workspace_scope");
+  if (agentScope === null && workspaceScope === null) return undefined;
+  return { agent_scope: agentScope, workspace_scope: workspaceScope };
+}
+
+/**
  * Create (and start) the standalone API server.
- * Accepts { service, store, config, logger, settings, port, host }:
+ * Accepts { service, store, config, logger, settings, port, host, embedder }:
  *   - token: persisted settings kv "external_api" wins; auto-generated
  *     (crypto.randomBytes(24).toString("base64url")) and persisted when empty.
  *   - port:  explicit arg > persisted settings > config.externalApiPort > 8790.
  *   - host:  explicit arg > config.externalApiHost > "127.0.0.1".
  *   - strictPort: EADDRINUSE rejects instead of hopping ports (daemon mode;
  *     default false keeps the in-host sidecar recovery described above).
+ *   - embedder: query-embedding handle for GET /context (issue #370) — same
+ *     instance the caller handed to service.setEmbedder; null degrades /context
+ *     to the rule + BM25 tier. Best-effort: embed failures never fail the route.
  * Returns { server, port, host, token, ready }: `port` is the effective bound
  * port (updated to the OS-assigned one after `ready` resolves when asked to
  * bind port 0), `ready` resolves once listening and rejects if the bind fails.
  */
-export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance, strictPort = false }) {
+export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance, strictPort = false, embedder = null }) {
   const persisted = settings?.getExternalApi?.() ?? {};
 
   let token = typeof persisted.token === "string" ? persisted.token : "";
@@ -526,6 +558,10 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
         const rerank = url.searchParams.get("rerank") !== "false";
         const occurredFrom = url.searchParams.get("occurred_from") ?? null;
         const occurredTo = url.searchParams.get("occurred_to") ?? null;
+        // scope 透传（issue #370）：searchMemories 本就收 scope，此前 8790 没有
+        // 入口——第三方（daemon 桥接侧）声明身份后，A2 软加权与 strictScope 硬
+        // 过滤才在检索面同样成立；与 /context 同口径（scopeFromSearchParams）。
+        const scope = scopeFromSearchParams(url);
         const query = q.trim();
         if (!query) {
           sendJson(res, 200, { items: [], mode: "keyword" });
@@ -537,6 +573,7 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
             mode,
             topK: limit,
             useRerank: rerank,
+            ...(scope ? { scope } : {}),
             ...(occurredFrom !== null || occurredTo !== null ? { occurredFrom, occurredTo } : {})
           })
         ).then((rows) => {
@@ -545,6 +582,43 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
         }).catch(() => {
           sendJson(res, 200, { items: service.toApiList(service.search(query, { limit })), mode: "keyword" });
         });
+        return;
+      }
+
+      // --- GET /context: 注入候选一站式聚合（issue #370，#363 承诺）------------
+      // 给定话题返回「宿主此刻会注入什么」的数据等价物：injectCandidates 全语义
+      // （优先级分层 / 编码门控 / heat / scope 软加权 / hybrid 语义路 / pin 前置，
+      // service.js:1494）+ 画像 + 规则。结构化条目、不含渲染文本——语言 / 时间
+      // 前缀 / 热记忆是宿主会话概念，调用方（Mneme Bridge 等网页端桥接）自行渲染。
+      // 与宿主注入的两点差异都是 HTTP 面的有意为之：① 首次调用即走语义路（宿主
+      // 渲染必须同步，查询向量只能异步 prefetch 给下一轮，inject.js Bug4；这里
+      // 没有该约束）；② 不做跨轮轮换（daemon 无会话状态，调用方自管）。
+      // recall_runs 记账随 injectCandidates 内建（#217：注入是曝光型访问事件，
+      // mode='inject' 与检索命中同表分账）——宿主注入同样记，/context 自动同口径。
+      if (req.method === "GET" && pathname === "/context") {
+        const q = (url.searchParams.get("q") ?? "").trim();
+        const maxItemsRaw = Number(url.searchParams.get("topK") ?? url.searchParams.get("limit") ?? 5);
+        const maxItems = Number.isInteger(maxItemsRaw) && maxItemsRaw > 0 ? maxItemsRaw : 5;
+        // threshold 是 importance 阈值（injectCandidates 语义），与 /search 的
+        // 相似度 threshold 同名不同义——文档已点名，勿混。
+        const thresholdRaw = Number(url.searchParams.get("threshold") ?? 3);
+        const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : 3;
+        const scope = scopeFromSearchParams(url);
+        void Promise.resolve(q && embedder ? embedQueryVector(embedder, q) : undefined)
+          .catch(() => undefined)   // 查询嵌入失败降级规则档（与 searchMemories 同口径）
+          .then((queryVector) => {
+            const pinnedStats = {};
+            const items = service.injectCandidates({ query: q, maxItems, threshold, queryVector, scope, pinnedStats });
+            sendJson(res, 200, {
+              profile: (settings?.getProfile?.() ?? "").trim(),
+              rules: settings?.getRules?.() ?? [],
+              items: service.toApiList(items),
+              pinnedCount: pinnedStats.shown ?? 0
+            });
+          })
+          .catch(() => {
+            sendJson(res, 500, { error: "internal" });
+          });
         return;
       }
 

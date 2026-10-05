@@ -135,7 +135,10 @@ export async function createServeRuntime({
   // token 与宿主共用同一 kv 键 external_api:首次启动自动生成并持久化
   // (api-standalone.js:203-212),DSH 面板 / CLI / daemon 三方零配置共享凭证。
   const tokenExisted = Boolean(settings.getExternalApi?.()?.token);
-  const api = createStandaloneApi({ service, store, config: cfg, logger, settings, port, host, maintenance, strictPort });
+  // embedder 注入 /context 的查询嵌入（issue #370）：三路取当前生效的同一句柄——
+  // 注入覆盖用注入值，semantic 路用它的产物，off/lightMode 为 null（路由侧降级
+  // 规则档）。与 service.setEmbedder 的是同一个实例，不存在第二真相源。
+  const api = createStandaloneApi({ service, store, config: cfg, logger, settings, port, host, maintenance, strictPort, embedder: embedder ?? semantic?.embedder ?? null });
 
   return {
     api,
