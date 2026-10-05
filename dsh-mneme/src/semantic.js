@@ -197,7 +197,9 @@ export function createSemantic({ store, service, settings, cfg, logger, vectorIn
         if ("ready" in embedder && embedder.ready !== true) {
           // Local/ollama embedders init asynchronously; give them a moment
           // before giving up on this boot (next boot retries).
-          if (tries > 0) setTimeout(() => attempt(tries - 1), 2000);
+          // CodeRabbit on #365:嵌套重试计时器同样入册,否则 dispose 后仍可能
+          // 对已关库跑 needsEmbedding(有 try/catch 兜底只是日志噪声,但状态要收干净)。
+          if (tries > 0) reindexTimer = setTimeout(() => attempt(tries - 1), 2000);
           return;
         }
         if (!store.needsEmbedding(1).length) return; // nothing to backfill
