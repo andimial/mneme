@@ -46,7 +46,8 @@ test("serve bin: spawn 冒烟;daemon 与宿主进程同库互写互读", { timeo
   const peer = createService({ store: seedStore, mirror: null, config: {} });
   peer.saveWithDedupe({ type: "project", title: "peer 进程直写", content: "测试进程经 createStore 写入", importance: 3 });
 
-  const child = spawn(process.execPath, [BIN, "--memory-dir", dir, "--port", "0"], {
+  // --embed off:CI 无 runtime payload,绝不能触发取件;多进程共存与语义无关
+  const child = spawn(process.execPath, [BIN, "--memory-dir", dir, "--port", "0", "--embed", "off"], {
     stdio: ["ignore", "pipe", "pipe"]
   });
   let stdout = "";

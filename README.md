@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3E63DD?style=flat-square" alt="license"></a>
   <a href="https://github.com/slow-stack/mneme/actions"><img src="https://img.shields.io/github/actions/workflow/status/slow-stack/mneme/ci.yml?style=flat-square&label=CI" alt="CI"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-22%2B-3E63DD?style=flat-square&logo=nodedotjs&logoColor=white" alt="node"></a>
-  <a href="https://github.com/slow-stack/mneme"><img src="https://img.shields.io/badge/tests-1502%20passed-3E63DD?style=flat-square" alt="tests"></a>
+  <a href="https://github.com/slow-stack/mneme"><img src="https://img.shields.io/badge/tests-1504%20passed-3E63DD?style=flat-square" alt="tests"></a>
   <a href="https://codecov.io/gh/slow-stack/mneme"><img src="https://img.shields.io/codecov/c/github/slow-stack/mneme/main?style=flat-square" alt="coverage"></a>
   <a href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome"></a>
 </p>
@@ -151,7 +151,7 @@ dsh web
 
 ## 不开 DSH 也能服务（独立服务 daemon）
 
-`dsh-mneme-serve` 把记忆库跑成常驻数据面——DSH 关着，第三方集成（网页端桥接、脚本、自有面板）照样读写同一份记忆：token 与 DSH 面板/CLI 共用，路由与「外部访问 API」同源，端口被占直接报错（与 DSH 外部访问二选一）。第一期无 LLM（巩固/蒸馏仍属 DSH 宿主），检索为关键词 + BM25，向量接入在后续版本。
+`dsh-mneme-serve` 把记忆库跑成常驻数据面——DSH 关着，第三方集成（网页端桥接、脚本、自有面板）照样读写同一份记忆：token 与 DSH 面板/CLI 共用，路由与「外部访问 API」同源，端口被占直接报错（与 DSH 外部访问二选一）。第一期无 LLM（巩固/蒸馏仍属 DSH 宿主）；检索默认 local 嵌入（首次启动自动取件模型，`--embed off` 可关）。
 
 ```bash
 npm i -g @modusensus/dsh-mneme
@@ -193,7 +193,7 @@ dsh-mneme-serve          # 默认 ~/.dsh/memory + 127.0.0.1:8790
 
 ```bash
 cd dsh-mneme && npm install
-npm test        # 1502 个测试
+npm test        # 1504 个测试
 npm run stress  # 三轴线压测
 npm run sync    # src → lib 同步
 ```
@@ -344,7 +344,7 @@ The plugin ships a zero-dependency stdio MCP server (standalone npm package **`m
 
 ## Serve memories without DSH (standalone daemon)
 
-`dsh-mneme-serve` runs the memory store as a long-lived data plane — with DSH closed, third-party integrations (web-bridge tools, scripts, your own panels) still read and write the same memories: the Bearer token is shared with the DSH panel/CLI, routes mirror the external API, and a busy port is a hard error (pick either the daemon or DSH's external API, not both). Phase 1 is LLM-free (consolidation/distillation stay with the DSH host); retrieval is keyword + BM25, with vector search arriving in a later release.
+`dsh-mneme-serve` runs the memory store as a long-lived data plane — with DSH closed, third-party integrations (web-bridge tools, scripts, your own panels) still read and write the same memories: the Bearer token is shared with the DSH panel/CLI, routes mirror the external API, and a busy port is a hard error (pick either the daemon or DSH's external API, not both). Phase 1 is LLM-free (consolidation/distillation stay with the DSH host); retrieval defaults to local embeddings (runtime + model auto-provisioned on first boot, `--embed off` to disable).
 
 ```bash
 npm i -g @modusensus/dsh-mneme
@@ -386,7 +386,7 @@ dsh-mneme-serve          # defaults: ~/.dsh/memory + 127.0.0.1:8790
 
 ```bash
 cd dsh-mneme && npm install
-npm test        # 1502 tests
+npm test        # 1504 tests
 npm run stress  # three-axis stress test
 npm run sync    # src → lib sync
 ```

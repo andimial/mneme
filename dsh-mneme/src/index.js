@@ -17,10 +17,10 @@ import { createStandaloneApi } from "./api-standalone.js";
 import { createMaintenance } from "./maintenance.js";
 import { createSettings } from "./settings.js";
 import { createCommandManager } from "./commands.js";
-import { createEmbedder } from "./embedding.js";
-import { createEmbedderByProvider } from "./local-embedder.js";
-import { LocalReranker } from "./reranker.js";
 import { createVectorIndex } from "./vector-index.js";
+// semantic(embedder/reranker/boot 回填)纯搬移至 src/semantic.js(PR2):宿主与
+// daemon(dsh-mneme-serve,#363)共用同一套装配,原文件保留 barrel 出口。
+import { createSemantic } from "./semantic.js";
 import { Config, applyLightModePreset, injectChildEnabled } from "./config.js";
 import { langOf } from "./lang.js";
 import { extractEntities } from "./entities/extractor.js";
@@ -147,43 +147,9 @@ export function createEntityStreamAdapter({ llm, agentDefaultModel, logger, serv
   };
 }
 
-/**
- * Issue #128: bounded backfill of rows still missing an embedding (active rows
- * only — needsEmbedding filters archived/forgotten). Exported for tests.
- *
- * Runs regardless of the model fingerprint: the old call-site gate returned
- * early when vector_meta already held the embedder's hash, permanently
- * orphaning rows whose embed failed at write time (embedder not ready /
- * provider rate limit) — one successful embed was enough to never backfill
- * again. markModel is idempotent when the fingerprint already matches, so
- * re-running costs nothing beyond the actually-missing rows.
- */
-export async function backfillMissingEmbeddings({
-  store, embedder, vectorIndex, logger,
-  maxTotal = 500, batchSize = 10, rateLimitMs = 200
-}) {
-  let indexed = 0;
-  for (let done = 0; done < maxTotal;) {
-    const rows = store.needsEmbedding(batchSize);
-    if (!rows.length) break;
-    for (const row of rows) {
-      try {
-        const text = [row.title, row.content].filter(Boolean).join("\n");
-        const vector = await embedder.embedSingle(text);
-        if (vector?.length) {
-          store.setEmbedding(row.id, vector);
-          indexed++;
-        }
-      } catch { /* skip the bad row */ }
-    }
-    done += rows.length;
-    // Rate limit: space out batches so the provider is not hammered.
-    if (store.needsEmbedding(1).length) await new Promise((r) => setTimeout(r, rateLimitMs));
-  }
-  if (indexed > 0 && embedder.modelHash) vectorIndex.markModel?.(embedder.modelHash, embedder.dimension);
-  logger?.info?.(`[dsh-mneme] auto-reindex backfilled ${indexed} embeddings on boot`);
-  return indexed;
-}
+// backfillMissingEmbeddings 已随语义装配整体搬至 src/semantic.js(纯搬移);
+// 保留 barrel 再出口 —— test/reindex-backfill.test.js 仍从本模块 import,调用方零改动。
+export { backfillMissingEmbeddings } from "./semantic.js";
 
 export const apply = (ctx, config) => {
   const rawCfg = Config(config);
@@ -331,150 +297,14 @@ export const apply = (ctx, config) => {
     }
   };
 
-  let embedder = null;
-  let reranker = null;
-  // #118: pending embedder-init retry timer, cleared on unload.
-  let embedRetryTimer = null;
-  if (lightMode) {
-    // Light mode: the whole vector pipeline stays off — no embedder (nothing
-    // pulls in ONNX/transformers), no reranker, no boot backfill (the preset
-    // also cleared autoReindexOnBoot). Recall degrades to keyword search and
-    // human mirror edits still merge on boot.
-    applyHumanEdits();
-  } else if (cfg.embedProvider === "openai") {
-    // vectorIndex is passed so the legacy OpenAI embedder records the producing
-    // model fingerprint after each successful embed (Bug3).
-    embedder = createEmbedder({ store, settings, logger: ctx.logger, vectorIndex });
-    service.setEmbedder(embedder);
-    // issue #135: 未配置时明确告警一次。此前 legacy OpenAI embedder 恒报
-    // ready=true，向量层「绿的但全哑」可以静默存在很久（本机持续了数周）。
-    // 只记日志、不阻断启动：轻量模式与「先跑起来再补配置」都是正当用法。
-    if (embedder.configured === false) {
-      ctx.logger?.warn?.(
-        "[dsh-mneme] 向量层未配置（vector-config 的 enabled/baseUrl/apiKey/model 有缺）："
-        + "语义召回、语义去重、rerank、sleep 冲突检测将静默失效，"
-        + "dream 的语义聚类会退化为全量窗口兜底。"
-        + "请在设置面板补全 embedding 端点与模型，或把 embedProvider 改为 local/ollama。"
-      );
-    }
-    // legacy OpenAI embedder needs no async init → human edits apply right away
-    applyHumanEdits();
-  } else {
-    try {
-      embedder = createEmbedderByProvider(cfg.embedProvider, {
-        model: cfg.embedProvider === "ollama" ? cfg.ollamaModel : cfg.localEmbedModel,
-        dimension: cfg.localEmbedDimension,
-        device: cfg.localEmbedDevice,
-        batchSize: cfg.localEmbedBatchSize,
-        // 池化方式必须与模型的训练口径一致（BGE 系 = CLS）。它既进 embed() 的调用，
-        // 也进 modelHash —— 池化改了就是换向量空间，既有索引会被判失配并重建。
-        pooling: cfg.localEmbedPooling,
-        cacheDir: cfg.embedModelCacheDir,
-        runtimeDir: cfg.runtimeDir,
-        // #188：embedModelMirror 接成 transformers 的下载镜像（此前死配置）。
-        remoteHost: cfg.embedModelMirror,
-        resilientModelDownload: cfg.resilientModelDownload,
-        baseUrl: cfg.ollamaBaseUrl,
-        logger: ctx.logger
-      });
-      service.setEmbedder(embedder);
-      // issue #6: wait for extractor init before applying human edits, so
-      // scheduled embeddings see a ready embedder.
-      const bootEmbedder = () => embedder.init()
-        .then(() => { applyHumanEdits(); return true; })
-        .catch(() => false);
-      // #118: the old one-shot probe permanently degraded search to keyword
-      // when Ollama was briefly unreachable at boot (recoverable only by
-      // restart). Retry briefly (5 attempts total: 1 initial + 4 × 15s);
-      // search degrades to keyword meanwhile because per-query embed failures
-      // are swallowed.
-      bootEmbedder().then((ok) => {
-        if (ok) return;
-        let tries = 4;
-        const retry = () => {
-          if (tries-- <= 0) {
-            ctx.logger?.warn?.("[dsh-mneme] embedder init retries exhausted, search degrades to keyword");
-            service.setEmbedder(null);
-            applyHumanEdits();
-            return;
-          }
-          embedRetryTimer = setTimeout(async () => {
-            if (await bootEmbedder()) return;
-            retry();
-          }, 15_000);
-        };
-        ctx.logger?.warn?.("[dsh-mneme] embedder init failed, retrying");
-        retry();
-      });
-    } catch (error) {
-      ctx.logger?.warn?.(`[dsh-mneme] embedder unavailable, search degrades to keyword: ${String(error)}`);
-      applyHumanEdits();
-    }
-  }
-
-  // Cross-encoder rerank over recall candidates. Best-effort: a failed model
-  // load only disables reranking, never search itself. Explicit opt-in only
-  // (rerankEnabled defaults to false): constructing LocalReranker is what pulls
-  // in onnxruntime, so the default config never loads it (item ⑥).
-  if (cfg.rerankEnabled && cfg.rerankProvider === "local") {
-    try {
-      reranker = new LocalReranker({
-        model: cfg.rerankModel,
-        batchSize: cfg.rerankBatchSize,
-        maxCandidates: cfg.rerankMaxCandidates,
-        scoreThreshold: cfg.rerankScoreThreshold,
-        device: cfg.localEmbedDevice,
-        cacheDir: cfg.embedModelCacheDir,
-        runtimeDir: cfg.runtimeDir,
-        // #188：量化档默认 q8（此前不传 dtype 会去要 1GB 级 fp32 模型）；
-        // embedModelMirror 此前是死配置，现接成 transformers 的下载镜像。
-        useDtype: cfg.rerankDtype,
-        remoteHost: cfg.embedModelMirror,
-        resilientModelDownload: cfg.resilientModelDownload,
-        logger: ctx.logger
-      });
-      service.setReranker(reranker);
-      reranker.init().catch((error) => {
-        ctx.logger?.warn?.(`[dsh-mneme] reranker init failed, rerank disabled: ${String(error)}`);
-        service.setReranker(null);
-      });
-    } catch (error) {
-      ctx.logger?.warn?.(`[dsh-mneme] reranker unavailable, rerank disabled: ${String(error)}`);
-    }
-  }
-
-  // Bug2: lazy auto-backfill of missing embeddings on boot. When the vector API
-  // is configured and rows still lack an embedding (e.g. written before vector
-  // search was enabled), the backfill runs in the background after a short
-  // delay. Gated on cfg.autoReindexOnBoot; rate-limited in small batches so a
-  // large backlog never floods the provider. Failures degrade silently —
-  // search stays keyword.
-  function scheduleAutoReindex() {
-    if (cfg.autoReindexOnBoot === false) return;
-    const attempt = (tries) => {
-      try {
-        if (!embedder || typeof embedder.embedSingle !== "function") return;
-        if ("ready" in embedder && embedder.ready !== true) {
-          // Local/ollama embedders init asynchronously; give them a moment
-          // before giving up on this boot (next boot retries).
-          if (tries > 0) setTimeout(() => attempt(tries - 1), 2000);
-          return;
-        }
-        if (!store.needsEmbedding(1).length) return; // nothing to backfill
-        // Issue #128: no fingerprint gate here anymore — a matching fingerprint
-        // used to return early and permanently orphan rows whose embed failed
-        // at write time. See backfillMissingEmbeddings().
-        backfillMissingEmbeddings({ store, embedder, vectorIndex, logger: ctx.logger })
-          .catch((error) => {
-            ctx.logger?.warn?.(`[dsh-mneme] auto-reindex failed: ${String(error)}`);
-          });
-      } catch (error) {
-        ctx.logger?.warn?.(`[dsh-mneme] auto-reindex failed: ${String(error)}`);
-      }
-    };
-    setTimeout(() => attempt(5), 5000);
-  }
-  scheduleAutoReindex();
+  // embedder/reranker/boot 回填装配已整体搬至 src/semantic.js(纯搬移,宿主与 daemon
+  // 共用):调用时序(applyHumanEdits 在各分支的触发点、#118 重试、autoReindexOnBoot)
+  // 原样保留在 createSemantic 内部,这里只拿引用。init 全失败的 embedder 引用仍会进入
+  // dream/sleep 的 semantic 面 —— 与搬移前一致:检索侧 setEmbedder(null) 降级关键词。
+  const semantic = createSemantic({
+    store, service, settings, cfg, logger: ctx.logger, vectorIndex, applyHumanEdits, lightMode
+  });
+  const { embedder, reranker } = semantic;
 
   // Custom commands: register persisted commands into the DSH command registry
   // on boot; add/remove re-register live through the API.
@@ -593,7 +423,7 @@ export const apply = (ctx, config) => {
 
   // #118: never let a pending embedder init retry fire after unload and touch
   // a torn-down context.
-  disposers.push(() => { if (embedRetryTimer !== null) clearTimeout(embedRetryTimer); });
+  disposers.push(() => semantic.dispose());   // #118 重试计时器 + boot 回填计时器(搬入 semantic.js 后由它自持)
 
   ctx.inject(["systemPrompt"], (promptCtx) => {
     if (cfg.autoInject) disposers.push(createInjector(promptCtx, service, settings, cfg));
