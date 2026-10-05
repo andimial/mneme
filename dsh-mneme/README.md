@@ -517,7 +517,7 @@ dsh-mneme config show                                # 查看当前配置（toke
 
 ### 独立服务（daemon，`dsh-mneme-serve`）
 
-不启动 DSH 也能让记忆库对外服务：`dsh-mneme-serve` 在宿主之外组装同一套 lib，把数据面跑成常驻进程（路由与鉴权与「独立外部 API」完全同源）。适用场景：第三方集成（如 [Mneme Bridge](https://github.com/slow-stack/mneme/discussions/363) 这类网页端桥接）需要长期挂载记忆库，而 DSH 不必一直开着。
+不启动 DSH 也能让记忆库对外服务：`dsh-mneme-serve` 在宿主之外组装同一套 lib，把数据面跑成常驻进程（路由与鉴权与「独立外部 API」完全同源）。适用场景：第三方集成（如 [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) 这类网页端桥接，见下方[社区适配器](#社区适配器)）需要长期挂载记忆库，而 DSH 不必一直开着。
 
 ```bash
 dsh-mneme-serve                                              # 默认 ~/.dsh/memory + 8790
@@ -556,6 +556,16 @@ Claude Code 挂载示例（项目根 `.mcp.json`；token 在面板「设置 → 
 ```
 
 未全局安装 npm 包时，把 `command` 换成 `npx`、加 `args: ["-p", "@modusensus/dsh-mneme", "dsh-mneme-mcp"]` 即可。
+
+## 社区适配器
+
+以下项目由社区维护，把 mneme 接入第三方平台或宿主。它们不是本仓库的一部分，兼容性由各自维护者跟进——升级 mneme 后如遇接口变更，请优先查看对应项目的 release note。
+
+| 项目 | 平台 | 说明 |
+|------|------|------|
+| [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) | DeepSeek 网页端 | 浏览器扩展（MV3）+ 本地 Node 服务：网页端会话蒸馏进 mneme 记忆库，DSH 侧记忆按话题回注网页对话，两侧共享同一份记忆。embedded（直接挂载 mneme lib）与 remote（standalone API，推荐配合 [`dsh-mneme-serve`](docs/DAEMON.md)）双模式 |
+
+> 想被收录？在 [Discussions](https://github.com/slow-stack/mneme/discussions) 开帖介绍你的项目，或直接提 PR 补充本表。
 
 ## 🏗️ 架构
 

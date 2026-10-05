@@ -162,6 +162,16 @@ npm i -g @modusensus/dsh-mneme
 dsh-mneme-serve          # 默认 ~/.dsh/memory + 127.0.0.1:8790
 ```
 
+## 社区适配器
+
+社区项目把 mneme 接入更多平台——它们不是本仓库的一部分，兼容性由各自维护者跟进：
+
+| 项目 | 平台 | 说明 |
+|------|------|------|
+| [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) | DeepSeek 网页端 | 浏览器扩展 + 本地服务：网页端会话蒸馏进 mneme 记忆库、DSH 侧记忆按话题回注，两侧共享同一份记忆。embedded（挂载 lib）与 remote（standalone API，不开 DSH 时配合上面的 daemon）双模式 |
+
+> 想被收录？在 [Discussions](https://github.com/slow-stack/mneme/discussions) 开帖介绍你的项目，或直接提 PR 补充本表。
+
 ## 文档
 
 | 文档 | 路径 |
@@ -358,6 +368,16 @@ The plugin ships a zero-dependency stdio MCP server (standalone npm package **`m
 npm i -g @modusensus/dsh-mneme
 dsh-mneme-serve          # defaults: ~/.dsh/memory + 127.0.0.1:8790
 ```
+
+## Community adapters
+
+Community projects that wire mneme into more platforms — not part of this repository; compatibility is tracked by their maintainers:
+
+| Project | Platform | Description |
+|---------|----------|-------------|
+| [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) | DeepSeek web | Browser extension + local service: web chats are distilled into the mneme store and DSH memories are injected back by topic, so both sides share one memory. Embedded (mounts the lib) and remote (standalone API — pairs with the daemon above) modes |
+
+> Want your project listed? Open a Discussion or send a PR adding a row to this table.
 
 ## Docs
 
