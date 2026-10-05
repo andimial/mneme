@@ -213,13 +213,15 @@ async function embedQueryVector(embedder, q) {
  * /context 查询嵌入的超时护栏（CodeRabbit on #371）：embedder 挂起（不抛错，
  * 典型如第三方 ollama/openai 端点无响应）时不能让 HTTP 连接被无限占住——超时
  * 按嵌入缺失处理，降级规则档。输掉的 embed promise 无法取消、自行结束后被丢弃，
- * 无害；挂起的主要成本是一个泄漏的挂起任务，可接受。
+ * 无害；挂起的主要成本是一个泄漏的挂起任务，可接受。嵌入先完成时清掉定时器
+ * （CodeRabbit 同轮 Minor：别让每个请求都留一枚要等满超时的计时器）。
  */
 function withEmbedTimeout(promise, timeoutMs) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve(undefined), timeoutMs))
-  ]);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
