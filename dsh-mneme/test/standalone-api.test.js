@@ -4,6 +4,7 @@ import { createStore } from "../src/store.js";
 import { createService } from "../src/service.js";
 import { createSettings } from "../src/settings.js";
 import { createStandaloneApi } from "../src/api-standalone.js";
+import { PACKAGE_VERSION } from "../src/version-check.js";
 import { Config, applyLightModePreset } from "../src/config.js";
 
 // Real HTTP server on an OS-assigned port (port: 0), driven with fetch.
@@ -249,7 +250,9 @@ test("GET /status reports version, per-type totals, entities and uptime", async 
     const res = await fetch(`${base}/status`, { headers: auth });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.version, "0.7.12");
+    // 回归锁：/status 的版本必须来自 package.json（PACKAGE_VERSION），不是散落的
+    // 字面量——曾经此处硬编码常量在发版时漏 bump，运行 0.8.13 却对外报 0.7.12。
+    assert.equal(body.version, PACKAGE_VERSION);
     assert.equal(body.memories.total, 3);
     assert.equal(body.memories.byType.preference, 1);
     assert.equal(body.memories.byType.project, 2);
