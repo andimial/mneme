@@ -8,11 +8,11 @@ import { PACKAGE_VERSION } from "../src/version-check.js";
 import { Config, applyLightModePreset } from "../src/config.js";
 
 // Real HTTP server on an OS-assigned port (port: 0), driven with fetch.
-async function setup({ config = {}, embedder = null } = {}) {
+async function setup({ config = {}, embedder = null, embedTimeoutMs } = {}) {
   const store = createStore(":memory:");
   const service = createService({ store, mirror: null, config });
   const settings = createSettings(store.db);
-  const api = createStandaloneApi({ service, store, config, settings, logger: null, port: 0, embedder });
+  const api = createStandaloneApi({ service, store, config, settings, logger: null, port: 0, embedder, embedTimeoutMs });
   await api.ready;
   const base = `http://127.0.0.1:${api.port}`;
   const auth = { authorization: `Bearer ${api.token}` };
@@ -697,6 +697,27 @@ test("GET /context survives a throwing embedder (rule-tier degradation, never 50
     assert.equal(res.status, 200, "embed failure must degrade to the rule tier");
     const body = await res.json();
     assert.ok(body.items.some((m) => m.title === "降级存照"));
+  } finally {
+    close();
+  }
+});
+
+test("GET /context times out a hung embedder and degrades (embedTimeoutMs guard)", async () => {
+  // CodeRabbit on #371：embedder 挂起（不抛错，典型为第三方 ollama/openai 端点
+  // 无响应）不能占住 HTTP 连接——超时按嵌入缺失降级规则档。测试用 50ms 短超时
+  // 避免慢测试；生产默认 3000 由工厂选项约束（同 strictPort，不进 config schema）。
+  const { base, auth, close } = await setup({
+    embedTimeoutMs: 50,
+    embedder: { ready: true, embedSingle: () => new Promise(() => {}) }
+  });
+  try {
+    await saveMemory(base, auth, { type: "decision", title: "挂起存照", content: "嵌入悬挂也要有注入", importance: 5 });
+    const started = Date.now();
+    const res = await fetch(`${base}/context?q=任意`, { headers: auth });
+    assert.equal(res.status, 200, "hung embedder must not hang the route");
+    const body = await res.json();
+    assert.ok(body.items.some((m) => m.title === "挂起存照"), "timed-out embed falls back to the rule tier");
+    assert.ok(Date.now() - started < 3000, "response must not wait on the hung embedder");
   } finally {
     close();
   }

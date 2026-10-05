@@ -210,6 +210,19 @@ async function embedQueryVector(embedder, q) {
 }
 
 /**
+ * /context 查询嵌入的超时护栏（CodeRabbit on #371）：embedder 挂起（不抛错，
+ * 典型如第三方 ollama/openai 端点无响应）时不能让 HTTP 连接被无限占住——超时
+ * 按嵌入缺失处理，降级规则档。输掉的 embed promise 无法取消、自行结束后被丢弃，
+ * 无害；挂起的主要成本是一个泄漏的挂起任务，可接受。
+ */
+function withEmbedTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(undefined), timeoutMs))
+  ]);
+}
+
+/**
  * scope 查询参数（/context 与 /search 同口径，issue #370）：两参全缺 = 返回
  * undefined（调用方不传 scope 走各自默认，行为与既往逐字节一致）；任一给出则
  * 缺的一维按「解析不到」（null）走 isVisibleInScope 的 fail-closed——身份不明
@@ -234,11 +247,14 @@ function scopeFromSearchParams(url) {
  *   - embedder: query-embedding handle for GET /context (issue #370) — same
  *     instance the caller handed to service.setEmbedder; null degrades /context
  *     to the rule + BM25 tier. Best-effort: embed failures never fail the route.
+ *   - embedTimeoutMs: /context query-embed guard (default 3000) — a hung
+ *     embedder must not hold the HTTP connection; timeout degrades to the rule
+ *     tier. Factory option (like strictPort), not a user config key.
  * Returns { server, port, host, token, ready }: `port` is the effective bound
  * port (updated to the OS-assigned one after `ready` resolves when asked to
  * bind port 0), `ready` resolves once listening and rejects if the bind fails.
  */
-export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance, strictPort = false, embedder = null }) {
+export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance, strictPort = false, embedder = null, embedTimeoutMs = 3000 }) {
   const persisted = settings?.getExternalApi?.() ?? {};
 
   let token = typeof persisted.token === "string" ? persisted.token : "";
@@ -604,7 +620,7 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
         const thresholdRaw = Number(url.searchParams.get("threshold") ?? 3);
         const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : 3;
         const scope = scopeFromSearchParams(url);
-        void Promise.resolve(q && embedder ? embedQueryVector(embedder, q) : undefined)
+        void Promise.resolve(q && embedder ? withEmbedTimeout(embedQueryVector(embedder, q), embedTimeoutMs) : undefined)
           .catch(() => undefined)   // 查询嵌入失败降级规则档（与 searchMemories 同口径）
           .then((queryVector) => {
             const pinnedStats = {};
