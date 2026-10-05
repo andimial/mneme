@@ -173,3 +173,22 @@ test("#249: capability guide extends only the judgement-heavy tool descriptions"
     assert.ok(on.get(name).startsWith(off.get(name)), `${name}: guidance is appended, original text untouched`);
   }
 });
+
+test("#249: memory_save guidance states the scope default in the safe direction", () => {
+  // #164 口径：scope 参数漏填的后果是单向的——未标注 = 处处可见（NULL 恒可见），
+  // 而显式 scope 会让记忆在离开他 scope 时被降权（A2 软隔离 ×0.5，保留可见）或直接
+  // 过滤（A3 strictScope，默认关）。所以这一句必须同时给出「什么时候标注」与「不确定
+  // 就都别填」，只写前半句会把模型推向「能填就填」，正好制造那个单向损失。
+  const store = createStore(":memory:");
+  const service = createService({ store, mirror: null, config: {} });
+  const registered = [];
+  createTools({ tools: { register(def) { registered.push(def); return () => {}; } } }, service, { injectGuidanceEnabled: true }, null);
+  const text = registered.find((t) => t.name === "memory_save").description;
+  assert.ok(text.includes("declare workspace_scope / agent_scope"), "scope declaration rule is present");
+  assert.ok(text.includes("otherwise leave both out"), "the no-scope default is stated, not just the declare case");
+  // 措辞回归锁：默认配置（strictScope 关）下他 scope 只是降权可见，不是消失。写成
+  // 「静默消失」既是错的，也会造出本来不存在的隐私预期。
+  assert.ok(!text.includes("silently disappears"), "must not claim a narrowed memory disappears silently");
+  // 回归锁：这句话不能只落在总则里（工具描述才是常驻、零注入成本的那个承载位）。
+  assert.ok(!MEMORY_GUIDE_SECTION.includes("declare workspace_scope / agent_scope"), "scope rule stays a per-tool rule, not a sixth general rule");
+});

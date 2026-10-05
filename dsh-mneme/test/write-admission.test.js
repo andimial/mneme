@@ -17,6 +17,12 @@ import {
   ADMISSION_TRIGGER_SOURCE
 } from "../src/write-admission.js";
 import { POSITIVE_SAMPLES, NEGATIVE_SAMPLES, SAMPLE_VALUES, referenceScan } from "./helpers/write-admission-samples.js";
+// #164 A2 的真判据 + 真配置：这一组测的是**接线**（index.js 那条路径的等价物），
+// 判据自己的验收在 test/sensitive-scan.test.js。config 用真 schema 而不是手搓对象，
+// 钉住「键名/嵌套形状与生产一致」——手搓的 `{ sensitiveScanEnabled: true }` 在键名
+// 写错时照样过，真 config 才会红。
+import { Config } from "../src/config.js";
+import { createSensitiveScan } from "../src/sensitive-scan.js";
 
 // #254 写入准入（第一阶段：只计量，不拦截）。
 // 本批次没有阈值、没有拦截分支，验收看两件事：默认路径零行为变化（无会话身份的
@@ -549,5 +555,114 @@ test("接线：被拒时 memory_save 返回 action=denied 与可行动的 reason
   );
   assert.equal(ok.action, "created");
   assert.ok(ok.id, "正常路径仍然返回 id");
+});
+
+// --- #164 A2 接线：判据自己的闸 × 闸门的 enforce -------------------------------
+// 这一组是 index.js 那条装配路径的等价物：真 config（Config({})）+ createSensitiveScan
+// 工厂 + 写入准入。三层开关的语义由此钉住——判据关（默认）不参与、判据开而 enforce 关
+// 只留审计、两个都开才拦。判据本身的假阳/漏放验收在 test/sensitive-scan.test.js。
+
+/** 用真 `Config` 解析默认值，再叠加测试要覆盖的那几个键。 */
+function a2Store(overrides = {}) {
+  const cfg = Config(overrides);
+  const store = createStore(":memory:");
+  const writeAdmission = createWriteAdmission({
+    store,
+    config: cfg,
+    sensitiveScan: createSensitiveScan({ config: cfg })
+  });
+  const service = createService({ store, mirror: null, config: cfg, writeAdmission });
+  return { store, service, cfg };
+}
+
+const SECRET_ROW = {
+  type: "project",
+  title: "调试记录",
+  content: `临时代码里贴了 ${SAMPLE_VALUES.githubPat}，回头删掉`
+};
+
+test("A2 默认关：写有密钥的行照常落库，且连拒绝面都不该出现", () => {
+  const { store, service } = a2Store();
+  const result = service.saveWithDedupe({ ...SECRET_ROW, _sessionKey: "s" });
+  assert.equal(result.action, "created", "判据默认关时这条路径与 #332 逐字段一致");
+  assert.equal(rowCount(store), 1);
+  // metadata 里不该多出任何 deny/decision 键——「默认关零行为变化」是验收第 1 条，
+  // 多一个恒为 allow 的键就把它从事实变成需要解释的说法（同上面 #254 那条）。
+  const row = admissionRows(store, "s")[0];
+  assert.equal(row.metadata.deny, undefined);
+  assert.equal(row.metadata.decision, undefined);
+});
+
+test("A2 观察档：判据开、enforce 关 → 写入照常，审计行带 kind 与 enforced=false", () => {
+  const { store, service } = a2Store({ sensitiveScanEnabled: true, writeAdmission: { enabled: true } });
+  const result = service.saveWithDedupe({ ...SECRET_ROW, _sessionKey: "s" });
+  assert.equal(result.action, "created", "#164 口径：默认仅告警");
+  assert.equal(rowCount(store), 1);
+  const deny = admissionRows(store, "s")[0].metadata.deny;
+  assert.equal(deny.reason, "sensitive");
+  assert.equal(deny.kind, "github_token");
+  assert.equal(deny.enforced, false, "仅告警档的指纹：deny 非空、enforced=false、写入仍发生");
+});
+
+test("A2 拦截档：判据开 + enforce 开 → 拒了、没落库、审计标 enforced", () => {
+  const { store, service } = a2Store({
+    sensitiveScanEnabled: true,
+    writeAdmission: { enabled: true, enforce: true }
+  });
+  const result = service.saveWithDedupe({ ...SECRET_ROW, _sessionKey: "s" });
+  assert.equal(result.action, "denied");
+  assert.equal(result.reason, "sensitive");
+  assert.equal(rowCount(store), 0, "被拒的写入一条都不该落库");
+  const deny = admissionRows(store, "s")[0].metadata.deny;
+  assert.equal(deny.kind, "github_token");
+  assert.equal(deny.enforced, true);
+});
+
+test("A2 与第 1 级空白判据互不依赖：只开 A2 不会把空白写入拦下", () => {
+  // 两个键是两批判据的闸（空白/噪声 vs 密钥/PII），分开是为了能单独观察 A2 的
+  // 命中分布——绑在一个开关上就没法只看这一类的假阳率。
+  const { store, service } = a2Store({ sensitiveScanEnabled: true });
+  const blank = service.saveWithDedupe({ _sessionKey: "s", type: "project", title: "...", content: "" });
+  assert.equal(blank.action, "created", "A2 开着不等于第 1 级判据也开");
+  assert.equal(admissionRows(store, "s")[0].metadata.deny, undefined);
+  // 反过来：只开第 1 级（writeAdmission.enabled）、A2 关，密钥行照常落库。
+  const { store: s2, service: svc2 } = a2Store({ writeAdmission: { enabled: true } });
+  assert.equal(svc2.saveWithDedupe({ ...SECRET_ROW, _sessionKey: "s" }).action, "created");
+  assert.equal(s2.list({ limit: 10 }).length, 1);
+});
+
+test("A2 跑在闸门里：只开 sensitiveScanEnabled（闸门关）时扫描器根本不参与", () => {
+  // 判据的唯一调用点是 write-admission 的 firstLevelHit，而闸门要
+  // writeAdmission.enabled 打开才走第 1 级判据。所以「本键开着」不等于「会扫」——
+  // 配置注释与面板文案都按这条写，否则用户以为单开本键就能拿到 A2 的命中分布。
+  const { store, service } = a2Store({ sensitiveScanEnabled: true });
+  const result = service.saveWithDedupe({ ...SECRET_ROW, _sessionKey: "s" });
+  assert.equal(result.action, "created", "闸门没开时 A2 不参与判定");
+  assert.equal(rowCount(store), 1, "写入照常落库");
+  const rows = admissionRows(store, "s");
+  assert.ok(rows.length > 0, "闸门仍走计量路径（去重 / g2 不受第 1 级开关影响）");
+  assert.ok(rows.every((row) => row.metadata.deny === undefined), "一条 deny 审计都没有：第 1 级判据整体没跑");
+});
+
+test("A2 负样本在真装配下一条都不误杀（含敏感词但没有值）", () => {
+  const { store, service } = a2Store({
+    sensitiveScanEnabled: true,
+    writeAdmission: { enabled: true, enforce: true }
+  });
+  for (const sample of NEGATIVE_SAMPLES) {
+    const result = service.saveWithDedupe({
+      _sessionKey: `sess-${sample.id}`,
+      type: "project",
+      title: sample.title,
+      content: sample.content
+    });
+    assert.equal(result.action, "created", `${sample.id} 被误杀（${sample.why}）`);
+  }
+  assert.equal(rowCount(store), NEGATIVE_SAMPLES.length);
+  for (const sample of NEGATIVE_SAMPLES) {
+    for (const row of admissionRows(store, `sess-${sample.id}`)) {
+      assert.equal(row.metadata.deny, undefined, `${sample.id} 不该带任何拒绝面`);
+    }
+  }
 });
 
