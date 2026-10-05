@@ -1,4 +1,4 @@
-// Standalone HTTP API (v0.7.12): a plain node:http server for ecosystem
+// Standalone HTTP API: a plain node:http server for ecosystem
 // integrations that live outside the DSH host and cannot reach the plugin's
 // internal webServer routes (/api/dsh-mneme/*). Mirrors the JSON semantics of
 // those routes but with mandatory Bearer-token auth on everything except
@@ -17,12 +17,10 @@ import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { TYPES } from "./store.js";
 import { bootstrapFromDirectory } from "./bootstrap.js";
+import { PACKAGE_VERSION } from "./version-check.js";
 
 const DEFAULT_PORT = 8790;
 const DEFAULT_HOST = "127.0.0.1";
-// Hardcoded release version (package.json is bumped at publish time and may
-// lag the code that ships in between).
-const VERSION = "0.7.12";
 const MAX_PORT_ATTEMPTS = 20;
 
 /**
@@ -260,7 +258,7 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
           entities = store.db.prepare("SELECT count(*) AS c FROM entities").get().c;
         } catch { /* entities storage unavailable → 0 */ }
         sendJson(res, 200, {
-          version: VERSION,
+          version: PACKAGE_VERSION,
           memories: { total: service.count(), byType },
           entities,
           uptime_s: Math.floor(process.uptime())

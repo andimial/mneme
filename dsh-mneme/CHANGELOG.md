@@ -10,6 +10,7 @@
 ## 🧹 工程
 
 - **发布准备脚本在 CRLF 检出上不再假成功（`scripts/release-prep.mjs`）**：该脚本用 `/^(# Changelog\n\n)/` 匹配 CHANGELOG 文件头，而 Windows 检出是 CRLF——正则命中不了，`replace` 退化成空操作，**脚本却照样打印 `✓ … 占位节`**，`git status` 里看不出任何异常（CI 跑在 ubuntu 是 LF，所以只有本机发版会中招，v0.8.13 那次即如此、最后靠人工补的占位节）。规则抽成 `dsh-mneme/scripts/changelog-prep.mjs` 的纯函数：行尾两种都吃、插入内容跟随原文件行尾、带 BOM 也认；匹配不上则如实回报 `header-not-found`，入口**报错退出（exit 1）**而不是假打印成功。配 6 条回归测试（LF / CRLF / BOM / 幂等 / 回报契约 / detectEol）。
+- **standalone API 的 `/status` 版本号不再硬编码**：该端点此前返回模块内的字面量常量，发布时不会随 `package.json` 一起 bump——手上的 0.8.13 实例对外报的是 `0.7.12`，第三方集成据它判版本会读到假数据。现改为复用 `version-check.js` 的 `PACKAGE_VERSION`（运行时读 `package.json`，宿主侧 `/api/dsh-mneme/status` 走的就是这条），测试断言同步改成锁 `PACKAGE_VERSION` 而非字面量——旧断言把常量钉死，正是「发布漏 bump 而 CI 全绿」放行的原因。
 
 ## [0.8.13] - 2026-10-03
 
