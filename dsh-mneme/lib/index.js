@@ -5,6 +5,8 @@ import { resolveDocumentDir } from "./document.js";
 import { createService } from "./service.js";
 // #254 写入准入（第一阶段只计量，不拦截）：见 src/write-admission.js 的文件头。
 import { createWriteAdmission } from "./write-admission.js";
+// #164 A2：写入边界的密钥 / PII 判据，注入给上面的写入准入。
+import { createSensitiveScan } from "./sensitive-scan.js";
 import { createTools } from "./tools.js";
 import { createInjector } from "./inject.js";
 import { createContinuityRescue } from "./continuity.js";
@@ -244,11 +246,17 @@ export const apply = (ctx, config) => {
   // 关掉，在无保留期的表里按写入频次增长是不能接受的）。
   //
   // sensitiveScan 是密钥 / PII 那一类判据的注入点。按 #254 验收第 4 条它是 #164 A2
-  // 的判据来源（A2 记在维护者排期里），所以本批不实现它，只把接口形状定在这里——
-  // 接上时只改这一行：
-  //   createWriteAdmission({ ..., sensitiveScan: createSensitiveScan({ config: cfg }) })
-  // 缺省 null 时第 1 级只跑空白 / 噪声两类判据，其余一切照旧。
-  const writeAdmission = createWriteAdmission({ store, config: cfg, logger: ctx.logger });
+  // 的判据来源，现在由 src/sensitive-scan.js 实现（维护者 09-28 把 A2 的认领转给
+  // 本侧）。这里只做接线：判据开不开由它自己的键 sensitiveScanEnabled 决定，工厂在
+  // 关时返回 null，闸门的行为就与 #332 合并时逐字段一致（那一版根本没有这个函数）；
+  // 命中之后是仅告警还是真拦，仍是 writeAdmission.enforce 的事（#164 口径：
+  // 默认仅告警、拦截 opt-in），判据不碰决策。
+  const writeAdmission = createWriteAdmission({
+    store,
+    config: cfg,
+    logger: ctx.logger,
+    sensitiveScan: createSensitiveScan({ config: cfg })
+  });
   const service = createService({ store, mirror, config: cfg, logger: ctx.logger, documentIndex, writeAdmission });
 
   // F-NEW-03: if the mirror sync failed last run (persisted dirty state), retry

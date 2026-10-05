@@ -4,8 +4,35 @@
 
 ## 🆕 新增
 
+<<<<<<< HEAD
 - **daemon 向量检索（PR2，#363）**：`dsh-mneme-serve` 的 `/search` 接入完整语义管线——embedder/reranker 装配与 boot 自动回填从 `index.js` **纯搬移**至 `src/semantic.js`（宿主与 daemon 共用同一份，调用时序契约原样；`backfillMissingEmbeddings` 经 index.js barrel 再出口，测试调用方零改动），daemon 侧新增 `createVectorIndex` 接线与 `--embed` 参数：`local`（默认，自管 runtime/嵌入模型缺失时经 `provisionRuntime` download 档自动取件，可用 `DSH_MNEME_RUNTIME_TARBALL_DIR`/`DSH_MNEME_RUNTIME_MIRROR` 换离线/镜像来源；失败降级关键词并打可操作日志）、`ollama`、`openai`（读宿主面板 vector-config）、`off`。向量轴有注入假 embedder 的回归锁；`createServeRuntime` 因此转为 async、语义键默认值在 `daemonSemanticCfg` 逐键锚定 config.js。
 - **独立服务 daemon（`dsh-mneme-serve`，#363）**：mneme 现在能在 DSH 宿主之外常驻——`src/serve.js` 的 `createServeRuntime` 用最小装配（store → settings → mirror → service → maintenance → standalone API，每步锚定 index.js 装配行号）把数据面跑成独立进程，第三方集成（网页端桥接等）不必为挂载记忆库而保持 DSH 开机。第一期刻意无 LLM：巩固（autoDream）与蒸馏结构性不在 daemon 内，这是与宿主「单写者」的机械保证，不靠用户自觉。token 与 DSH 面板/CLI 共用同一 kv 凭证，端口/主机解析链与外部访问一致；`createStandaloneApi` 新增 `strictPort` 选项——daemon 的配置端口被占即报错退出而非顺延（第三方把 URL 写死，静默换端口等于坏），不传该选项的宿主旁路行为不变。`/search` 照常落 recall_runs，第三方检索的复用统计不缺数。多进程共存（daemon 与宿主同库互写互读）有专门回归锁；已知限制（双进程去重竞态、镜像双写、版本偏斜）见 docs/DAEMON.md。
+=======
+- **独立服务 daemon（`dsh-mneme-serve`，#363）**：mneme 现在能在 DSH 宿主之外常驻——`src/serve.js` 的 `createServeRuntime` 用最小装配（store → settings → mirror → service → maintenance → standalone API，每步锚定 index.js 装配行号）把数据面跑成独立进程，第三方集成（网页端桥接等）不必为挂载记忆库而保持 DSH 开机。第一期刻意无 LLM：巩固（autoDream）与蒸馏结构性不在 daemon 内，这是与宿主「单写者」的机械保证，不靠用户自觉；检索为关键词 + BM25（向量由后续 PR 抽取 semantic 装配后接入）。token 与 DSH 面板/CLI 共用同一 kv 凭证，端口/主机解析链与外部访问一致；`createStandaloneApi` 新增 `strictPort` 选项——daemon 的配置端口被占即报错退出而非顺延（第三方把 URL 写死，静默换端口等于坏），不传该选项的宿主旁路行为不变。`/search` 照常落 recall_runs，第三方检索的复用统计不缺数。多进程共存（daemon 与宿主同库互写互读）有专门回归锁；已知限制（双进程去重竞态、镜像双写、版本偏斜）见 docs/DAEMON.md。
+## 🧹 工程
+
+- **发布准备脚本在 CRLF 检出上不再假成功（`scripts/release-prep.mjs`）**：该脚本用 `/^(# Changelog\n\n)/` 匹配 CHANGELOG 文件头，而 Windows 检出是 CRLF——正则命中不了，`replace` 退化成空操作，**脚本却照样打印 `✓ … 占位节`**，`git status` 里看不出任何异常（CI 跑在 ubuntu 是 LF，所以只有本机发版会中招，v0.8.13 那次即如此、最后靠人工补的占位节）。规则抽成 `dsh-mneme/scripts/changelog-prep.mjs` 的纯函数：行尾两种都吃、插入内容跟随原文件行尾、带 BOM 也认；匹配不上则如实回报 `header-not-found`，入口**报错退出（exit 1）**而不是假打印成功。配 6 条回归测试（LF / CRLF / BOM / 幂等 / 回报契约 / detectEol）。
+
+## [0.8.13] - 2026-10-03
+
+## 🐛 修复
+
+- **密钥 / PII 判据三处加固（`src/sensitive-scan.js`，PR #356，均为合并后独立复审发现）**：① **回溯有上界**——`email` 的 local part 与 `connection_string` 的 scheme 都作用在含 `.` 的字符类上，缺上界时每个起点都要一路重扫到结尾才失败（O(n²)），而判据在写入路径上同步跑：实测 34KB 点分链 0.6 秒、120KB 对抗串 23.5 秒（email 18.6s + 连接串 4.1s），等于把写入卡死；加上界后同输入约 60ms，边界取 RFC 5321 给 local part 的 64。② **赋值型规则左边界不再排除 `_`**——环境变量名正是拿 `_` 当分隔符，原写法让 `DB_PASSWORD=` / `MY_API_KEY=` / `MYSQL_PASSWORD=` 这类「前缀_关键词」整类漏放（只有恰好落在行首的 `API_KEY=` 能中）；放宽后 #332 的 26 条语料仍全绿，挡误杀的仍是那道占位符守卫。③ **身份证档补校验位**（GB 11643 / ISO 7064 MOD 11-2）——原先只有银行卡档有 Luhn，18 位纯数字（订单号 / 内部编号）先被身份证规则命中，等不到银行卡那条的校验。三处都配了回归测试，并做过变异检验（改回原写法各自变红）。判据仍在 `sensitiveScanEnabled` 默认关之后，线上行为不变。
+- **strictScope 硬过滤被 `entity:` / `attr:` 前缀检索绕过（#17 A3 的漏网分支；issue #357 / PR #358）**：`searchMemories` 里这两条前缀路在**函数入口**就 return，而硬过滤写在**后半段**的融合池上——早返回的路根本走不到，于是显式标注为他者 scope 的记忆换这两个前缀就能原样读出，而且是**满分**返回（连 A2 的 ×0.5 降权都没有）。暴露面是 `scopeEnabled` + `strictScope` + `entitySearchEnabled` 三者同开（默认全关），而 `entity:` 正是 #24 图谱线在推的语法。修法：scope 闸抽成 `gateByScope()` 单一实现，融合池与两条前缀路三处共用，让「过滤点写在哪」不再漂移（同 #349 把阈值口径收进 `activeStoreSize()` 的理由）；闸门插在 `topK` 截断**之前**（先 filter 后 slice）——反过来会让出局的候选占掉名额，`topK=1` 且首位出局时直接返回空数组；同时闸门必须在 `touchRecalled` **之前**，否则出局的行仍会被刷回温时钟、并在被动确认开启时 bump 关联边，命中反馈落到了调用方本不该看见的行上。`strictScope` 关（默认）时逐字节不变；他 scope 行的 A2 软加权要不要一并补到这两条路，按 #339 的口径另行决定。
+
+## 🆕 新增
+
+- **写入边界的密钥 / PII 判据（`sensitiveScanEnabled`，默认关；PR #354）**：写入准入（#254 第 1 级）此前只跑空白 / 噪声两类判据，密钥 / PII 那一档按设计留了注入点而没实现。现在补上 `src/sensitive-scan.js`——纯确定性、零 LLM，先认形状再认关键词（赋值型规则带占位符守卫，所以「把 API key 放进环境变量」这类讨论句不报）。命中落审计 `metadata.deny.reason='sensitive'` + `kind`（密钥 / PII 分档，便于先看分布再决定放行策略），审计位与 #332 定的形状一致。开关分层：本键只决定「这类判据参不参与」，命中之后是仅告警还是真拦仍由 `writeAdmission.enforce` 决定（默认仅告警、拦截 opt-in）。回归样本集（10 条密钥 + 4 条 PII 正样本、12 条负样本）原样跑真判据：正样本不漏、负样本不误杀。
+- **能力说明补 scope 声明规则（`memory_save` 工具描述；PR #355）**：`memory_save` 的 `workspace_scope` / `agent_scope` 是必填面，此前的指引只讲「该不该写」，没讲「写给谁看」。现在在 `memory_save` 的工具描述尾部补一条判断规则：只在记忆确实只属于一个 workspace / 一个 agent 时才标注，否则两个都留空（未标注 = 处处可见，是安全的默认）。写进工具描述而不是总则——它是单工具的判据，总则那五条讲的是「何时查 / 何时写 / 何时 no-op」，加第六条会把单工具语义抬成全局纪律。#249 第二批；注入时机（N0 能力说明 / N1 分池 / N2 尾声提醒）未动工。
+
+## 🧹 工程
+
+- **发版说明与流程收尾**：CHANGELOG 条目去掉非公开单号与实验代号，并新增 `### 贡献者 / Thanks` 小节；CONTRIBUTING 补两条发版惯例。
+
+### 贡献者 / Thanks
+
+- **@heptaspirit** — 写入边界的密钥 / PII 判据（PR #354）与 `memory_save` 的 scope 声明指引（PR #355）。
+>>>>>>> feat/serve-daemon
 
 ## [0.8.12] - 2026-10-01
 

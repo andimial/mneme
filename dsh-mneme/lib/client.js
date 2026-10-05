@@ -493,6 +493,11 @@ window.__ModuleLoader__.load({
         "memory.features.writeAdmission.enabled.hint": "写入前判空白/噪声，命中留审计（不拦）",
         "memory.features.writeAdmission.enforce": "写入准入拦截",
         "memory.features.writeAdmission.enforce.hint": "真拦下命中的写入；关闭时只留审计不拦",
+        // #164 A2：密钥/PII 判据自己的闸。文案要写清它管的是哪一批判据（与上面的
+        // 空白/噪声分开）、它跑在「写入准入判定」里面（那一项关着就不跑），以及
+        // 「开着也不拦」——拦是上面那项的事。
+        "memory.features.sensitiveScanEnabled": "密钥/PII 扫描",
+        "memory.features.sensitiveScanEnabled.hint": "写入前扫密钥与个人信息；需先打开写入准入判定才会执行，命中只留审计，要拦再打开写入准入拦截",
         "memory.features.bm25SearchEnabled": "BM25 关键词检索",
         "memory.features.bm25SearchEnabled.hint": "传统关键词打分检索，与向量召回互补",
         "memory.features.conflictFreezeEnabled": "冲突冻结",
@@ -925,6 +930,12 @@ window.__ModuleLoader__.load({
         "memory.features.writeAdmission.enabled.hint": "Flag blank / noise writes before storing, with an audit row (never blocks)",
         "memory.features.writeAdmission.enforce": "Write admission enforcement",
         "memory.features.writeAdmission.enforce.hint": "Actually reject flagged writes; off keeps the audit row only",
+        // #164 A2: its own gate for the secret / PII rules (separate from the
+        // blank/noise pair above), and it runs inside the write admission checks
+        // above, so with those off it never runs. Hits are audited only;
+        // enforcement stays with the key above.
+        "memory.features.sensitiveScanEnabled": "Secret / PII scan",
+        "memory.features.sensitiveScanEnabled.hint": "Scan writes for credentials and personal data; needs write admission checks to run. Hits are audited only; enforcement needs the enforcement toggle too",
         "memory.features.bm25SearchEnabled": "BM25 keyword search",
         "memory.features.bm25SearchEnabled.hint": "Classic keyword scoring, complementary to vector recall",
         "memory.features.conflictFreezeEnabled": "Conflict freezing",
@@ -2122,7 +2133,7 @@ window.__ModuleLoader__.load({
     // test/inject-parent-gate.test.js 钉住。
     const FEATURE_CHILDREN = { autoInject: ["injectGuidanceEnabled", "continuityRescueEnabled"] };
     const FEATURE_GROUPS = [
-      { key: "group.core", items: ["autoInject", "autoSummarize", "hotMemoryEnabled", "injectTimePrefix", "memoryQualityFilter.enabled", "llmAudit.enabled", "writeAdmission.enabled", "writeAdmission.enforce"] },
+      { key: "group.core", items: ["autoInject", "autoSummarize", "hotMemoryEnabled", "injectTimePrefix", "memoryQualityFilter.enabled", "llmAudit.enabled", "writeAdmission.enabled", "writeAdmission.enforce", "sensitiveScanEnabled"] },
       { key: "group.enhance", items: ["entityExtractionEnabled", "codingRetrospect", "rerankEnabled", "resilientModelDownload", "searchSemanticDedup", "bm25SearchEnabled", "heatEnabled", "documentMemoryEnabled"] },
       { key: "group.dream", items: ["autoDream", "sleepModeEnabled"] },
       // v0.8.0 A4（issue #17）：作用域隔离组——标注总开关 + 严格硬过滤。
