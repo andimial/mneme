@@ -24,6 +24,7 @@ dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>]
 - `memoryDir`:CLI > env `DSH_MNEME_MEMORY_DIR` > `~/.dsh/memory`(与宿主 config.js 同默认,支持前导 `~`)。
 - port/host 解析链与宿主「外部访问」一致:显式参数 > kv `external_api` 持久值 > 默认 8790 / 127.0.0.1。
 - token 与 DSH 面板 / CLI **共用同一份**(kv `external_api`,首次启动自动生成并持久化)——三方零配置互通。
+- 安全:daemon 使用明文 HTTP,不提供原生 TLS。指定非回环 `--host` 时,请勿直接把服务暴露给不可信网络;远程访问请走 TLS 终止代理或 SSH 隧道。
 - stdout 只在就绪时打一行 `dsh-mneme-serve listening on http://host:port (pid N)`(机器可读,脚本/测试解析端口用);日志全走 stderr。
 - SIGINT/SIGTERM 优雅收库后 exit 0;Windows 强杀由 WAL 回放兜底。
 

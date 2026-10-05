@@ -48,8 +48,11 @@ function parseArgv(argv) {
       if (eq > -1) out[a.slice(2, eq)] = a.slice(eq + 1);
       else {
         const v = argv[i + 1];
-        if (v !== undefined && !v.startsWith("--")) { out[a.slice(2)] = v; i++; }
-        else out[a.slice(2)] = true;
+        // 本 bin 的旗标全部取值（无泛用布尔旗标）：值缺失或下一个 token 是旗标
+        // 都按「缺值」报错退出——不能落成 true（Number(true)=1 会把 --port 变成
+        // 绑端口 1，报 EACCES 让用户查错方向）。帮助/版本在上方分支已提前返回。
+        if (v !== undefined && !v.startsWith("-")) { out[a.slice(2)] = v; i++; }
+        else fail(`${a} 缺少参数值`);
       }
     } else {
       fail(`未知参数: ${a}\n运行 \`${BIN_NAME} --help\` 查看用法。`);
@@ -107,11 +110,12 @@ async function main(argv) {
   }
 
   let closing = false;
-  const shutdown = (signal) => {
-    if (closing) return;
+  const shutdown = async (signal) => {
+    // 第二次信号 = 强制退出（dispose 里 server.close 等 in-flight 收尾，极端情况下会挂）
+    if (closing) process.exit(0);
     closing = true;
     console.error(`[dsh-mneme] ${signal} received, closing...`);
-    try { rt.dispose(); } catch { /* dispose 各步自吞 */ }
+    try { await rt.dispose(); } catch { /* dispose 各步自吞 */ }
     process.exit(0);
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
