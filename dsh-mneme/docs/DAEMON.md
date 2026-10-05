@@ -1,0 +1,44 @@
+# dsh-mneme 独立服务(daemon)
+
+`dsh-mneme-serve`:在 DSH 宿主之外把 mneme 跑成一个常驻数据面。#363(Mneme Bridge)确立的方向——第三方集成需要长期挂载,而 DSH 不必一直开着;这是官方推荐姿势,lib 直挂的 embedded 模式降级为无网兜底。
+
+## 1. 职责边界
+
+daemon 是**数据面**,不是第二个宿主:
+
+- **有**:存储(SQLite)、检索(关键词 + BM25,`/search` 统一召回)、镜像同步与人改合并、`/maintenance/reclaim`、`/bootstrap`、recall_runs 检索回执。
+- **没有(第一期,无 LLM)**:巩固(autoDream)、蒸馏(autoSummarize)、实体抽取、sleep、注入/工具/面板路由。前两者是**结构性缺失**而非开关——daemon 装配里没有 LLM 句柄,巩固只属于 DSH 宿主进程。这就是 daemon 与宿主「单写者」的机械保证(AGENTS.md externalApi/autoDream 单侧纪律的 daemon 版),不依赖用户自觉。
+
+与宿主装配(`src/index.js` apply)的关系:`src/serve.js` 只搬数据面那一半,每步注释锚定 index.js 来源行号;刻意不抽公共装配函数(apply 其余环节与宿主 ctx 纠缠,防御段纪律「最后动或不动」)。装配漂移风险由 `test/serve-bin.test.js` 的多进程共存用例兜底(两进程真开同一个库互写互读)。
+
+## 2. 对外接口
+
+路由面 = `src/api-standalone.js` 全表(health/status/profile/rules/memories 读写/search/maintenance/bootstrap),鉴权同源(Bearer + timingSafeEqual,`GET /health` 免鉴权)。**零新路由**;唯一新选项是 `strictPort`(见 §4)。
+
+CLI:
+
+```bash
+dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>]
+```
+
+- `memoryDir`:CLI > env `DSH_MNEME_MEMORY_DIR` > `~/.dsh/memory`(与宿主 config.js 同默认,支持前导 `~`)。
+- port/host 解析链与宿主「外部访问」一致:显式参数 > kv `external_api` 持久值 > 默认 8790 / 127.0.0.1。
+- token 与 DSH 面板 / CLI **共用同一份**(kv `external_api`,首次启动自动生成并持久化)——三方零配置互通。
+- 安全:daemon 使用明文 HTTP,不提供原生 TLS。指定非回环 `--host` 时,请勿直接把服务暴露给不可信网络;远程访问请走 TLS 终止代理或 SSH 隧道。
+- stdout 只在就绪时打一行 `dsh-mneme-serve listening on http://host:port (pid N)`(机器可读,脚本/测试解析端口用);日志全走 stderr。
+- SIGINT/SIGTERM 优雅收库后 exit 0;Windows 强杀由 WAL 回放兜底。
+
+## 3. 内部文件
+
+- `src/serve.js` — `createServeRuntime({memoryDir, port, host, logger, strictPort})`:装配链 createStore → createSettings → createMirror → createService(最小 config)→ recoverMirror → 人改镜像合并 → recall recorder → createMaintenance → createStandaloneApi,每步锚定 index.js 行号。返回 `{api, store, service, settings, maintenance, tokenExisted, dispose}`;第三方可 import 它自行托管生命周期(bin 只是薄壳)。
+- `bin/dsh-mneme-serve.mjs` — CLI 壳。独立成 bin 而非 cli.mjs 子命令:CONTRIBUTING 禁止给 cli.mjs 加 import;命名循 dsh-mneme-mcp 先例。
+- `src/api-standalone.js` 的 `strictPort` 选项 — 唯一的数据面改动,默认关闭。
+
+## 4. 已知坑
+
+1. **端口互斥,二选一**:daemon 与 DSH 的「外部访问」抢同一个默认端口。daemon 侧 strictPort 报错退出;反方向( daemon 先占 8790,DSH 后开外部访问)宿主侧会**静默顺延**到下一端口(宿主旁路的多实例恢复语义,api-standalone.js listenWithRetry)——面板显示的端口会变,别当 bug 报。
+2. **双进程写并发**:与 DSH 同时运行是设计内场景(WAL + busy_timeout 先序,store.js createStore)。但 `saveWithDedupe` 的 (type,title,scope) 去重是先查后写、库层无 UNIQUE 约束,两进程并发写同一三元组有极小概率产生重复条目——已知限制,勿当强保证宣传(要不要加 UNIQUE 索引属 schema 防御段,单独决策)。
+3. **镜像双写竞态**:daemon 与宿主都会渲镜像 .md;可再生物,失败由 recoverMirror 自愈,极端并发下单文件可能短暂脏,下次同步覆盖。
+4. **版本偏斜**:库迁移是幂等加法式(PRAGMA 检查 + ALTER),旧代码读新 schema 一般无碍,但该组合无人测过——daemon 与插件请同版本升级。
+5. **第一期不吃宿主配置**:daemon 不加载 config schema(schemastery 是宿主 peer 依赖),面板/feature_flags 对它不生效;它只有 CLI 参数 + 上述固定最小 config(`language: zh`、document 子系统关闭)。向量检索(依赖 embedder/reranker 装配)由后续 PR 接入,接入前 `/search` 退化关键词 + BM25 属预期。
+6. **验收锚点**:`test/serve.test.js`(in-process 全链路 + token 复用 + recall_runs 回执)、`test/serve-bin.test.js`(真子进程 + 多进程互写互读)、`test/standalone-api.test.js` 的 strictPort 用例(busy → reject,默认路径仍顺延)。

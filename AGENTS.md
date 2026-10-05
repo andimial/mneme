@@ -24,7 +24,7 @@ dsh-mneme 是 DSH 宿主的记忆插件（蒸馏 / 注入 / 检索 / 巩固 / sc
 - 不 `amend` / force-push 别人的提交，不把别人未提交的改动 `stash` 走；
 - **提交不得有 AI 署名**（无 `Co-Authored-By`、无 "Generated with"）——见 [CONTRIBUTING](CONTRIBUTING.md)；
 - **本机私有信息不进公开文件**：车道分配、端口占用、记忆库路径这类只对某台机器成立的东西，放不进库的本地板（`.worktrees/coordination.md`）或 `.git/info/exclude`；本文件只放对所有人都成立的纪律（定位见开头：薄入口）；
-- 两个宿主都加载本插件时：`memoryDir` 可共用（`src/store.js` 的 `busy_timeout` + WAL 已为多进程就绪），但 `externalApiEnabled`（默认端口 8790）与 `autoDream` 后台任务**只能一边开**，否则 EADDRINUSE + 重复做梦（镜像/审计双写）。
+- 两个宿主都加载本插件时：`memoryDir` 可共用（`src/store.js` 的 `busy_timeout` + WAL 已为多进程就绪），但 `externalApiEnabled`（默认端口 8790）与 `autoDream` 后台任务**只能一边开**，否则 EADDRINUSE + 重复做梦（镜像/审计双写）。独立服务（`dsh-mneme-serve`）同理：与 DSH 外部访问抢同一端口、**二选一**；它第一期无 LLM，巩固结构性只在宿主侧，不构成第二个做梦者。
 
 ## 模块地图（按功能面）
 
@@ -44,7 +44,7 @@ dsh-mneme 是 DSH 宿主的记忆插件（蒸馏 / 注入 / 检索 / 巩固 / sc
 | 复用统计 | `src/recall-stats.js` | recall_runs 只读聚合（#217，Top-N 召回 + 僵尸率） |
 | 冷启动 | `src/bootstrap.js` | 从仓库文件反向构建初始记忆（POST /bootstrap） |
 | 配置 | `src/config.js`（schema + lightMode）、`src/settings.js`（feature flags 白名单） | 一切行为开关的家 |
-| API 面 | `src/api.js`（宿主内 /api/dsh-mneme/*）、`src/api-standalone.js`（Bearer 数据面）、`bin/dsh-mneme-mcp.mjs`（MCP stdio） | 对外三张脸 |
+| API 面 | `src/api.js`（宿主内 /api/dsh-mneme/*）、`src/api-standalone.js`（Bearer 数据面）、`bin/dsh-mneme-mcp.mjs`（MCP stdio）、`src/serve.js` + `bin/dsh-mneme-serve.mjs`（独立服务 daemon，无 LLM 数据面） | 对外四张脸 |
 | 面板 | `lib/client.js` | 面板侧产物，无 src 对应物 |
 | 运行时 | `src/runtime/*` | 模型下载（断点续传）/ 校验 / adopt |
 | 命令 | `src/commands.js` | 斜杠命令注册与派发 |

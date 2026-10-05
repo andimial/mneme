@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## 🆕 新增
+
+- **独立服务 daemon（`dsh-mneme-serve`，#363）**：mneme 现在能在 DSH 宿主之外常驻——`src/serve.js` 的 `createServeRuntime` 用最小装配（store → settings → mirror → service → maintenance → standalone API，每步锚定 index.js 装配行号）把数据面跑成独立进程，第三方集成（网页端桥接等）不必为挂载记忆库而保持 DSH 开机。第一期刻意无 LLM：巩固（autoDream）与蒸馏结构性不在 daemon 内，这是与宿主「单写者」的机械保证，不靠用户自觉；检索为关键词 + BM25（向量由后续 PR 抽取 semantic 装配后接入）。token 与 DSH 面板/CLI 共用同一 kv 凭证，端口/主机解析链与外部访问一致；`createStandaloneApi` 新增 `strictPort` 选项——daemon 的配置端口被占即报错退出而非顺延（第三方把 URL 写死，静默换端口等于坏），不传该选项的宿主旁路行为不变。`/search` 照常落 recall_runs，第三方检索的复用统计不缺数。多进程共存（daemon 与宿主同库互写互读）有专门回归锁；已知限制（双进程去重竞态、镜像双写、版本偏斜）见 docs/DAEMON.md。
 ## 🧹 工程
 
 - **发布准备脚本在 CRLF 检出上不再假成功（`scripts/release-prep.mjs`）**：该脚本用 `/^(# Changelog\n\n)/` 匹配 CHANGELOG 文件头，而 Windows 检出是 CRLF——正则命中不了，`replace` 退化成空操作，**脚本却照样打印 `✓ … 占位节`**，`git status` 里看不出任何异常（CI 跑在 ubuntu 是 LF，所以只有本机发版会中招，v0.8.13 那次即如此、最后靠人工补的占位节）。规则抽成 `dsh-mneme/scripts/changelog-prep.mjs` 的纯函数：行尾两种都吃、插入内容跟随原文件行尾、带 BOM 也认；匹配不上则如实回报 `header-not-found`，入口**报错退出（exit 1）**而不是假打印成功。配 6 条回归测试（LF / CRLF / BOM / 幂等 / 回报契约 / detectEol）。

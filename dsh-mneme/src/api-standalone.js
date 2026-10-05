@@ -30,8 +30,13 @@ const MAX_PORT_ATTEMPTS = 20;
  * the next MAX_PORT_ATTEMPTS-1 ports, and finally falls back to port 0 so the
  * OS assigns a free port. Multiple DSH profiles/instances sharing the default
  * port no longer leave the standalone API permanently unavailable.
+ *
+ * strictPort opts out of that recovery (dsh-mneme-serve daemon, #363): a
+ * long-lived third-party integration pins the URL, so silently hopping ports
+ * would make clients talk to nothing (or, worse, to a future different data
+ * plane). A busy configured port is a configuration error there — fail loud.
  */
-function listenWithRetry(server, startPort, host, logger) {
+function listenWithRetry(server, startPort, host, logger, strictPort = false) {
   return new Promise((resolve, reject) => {
     let attempt = 0;
     const tryListen = (port) => {
@@ -42,6 +47,10 @@ function listenWithRetry(server, startPort, host, logger) {
       };
       const onError = (error) => {
         server.off("listening", onListening);
+        if (error?.code === "EADDRINUSE" && strictPort) {
+          reject(error);
+          return;
+        }
         if (error?.code === "EADDRINUSE" && attempt < MAX_PORT_ATTEMPTS - 1) {
           attempt++;
           const next = startPort + attempt;
@@ -193,11 +202,13 @@ async function handlePutBody(res, service, logger, id, text) {
  *     (crypto.randomBytes(24).toString("base64url")) and persisted when empty.
  *   - port:  explicit arg > persisted settings > config.externalApiPort > 8790.
  *   - host:  explicit arg > config.externalApiHost > "127.0.0.1".
+ *   - strictPort: EADDRINUSE rejects instead of hopping ports (daemon mode;
+ *     default false keeps the in-host sidecar recovery described above).
  * Returns { server, port, host, token, ready }: `port` is the effective bound
  * port (updated to the OS-assigned one after `ready` resolves when asked to
  * bind port 0), `ready` resolves once listening and rejects if the bind fails.
  */
-export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance }) {
+export function createStandaloneApi({ service, store, config = {}, logger, settings, port, host, maintenance, strictPort = false }) {
   const persisted = settings?.getExternalApi?.() ?? {};
 
   let token = typeof persisted.token === "string" ? persisted.token : "";
@@ -552,7 +563,7 @@ export function createStandaloneApi({ service, store, config = {}, logger, setti
   });
   const ready = new Promise((resolve, reject) => {
     // listening handled by listenWithRetry
-    listenWithRetry(server, boundPort, boundHost, logger).then(resolve, reject);
+    listenWithRetry(server, boundPort, boundHost, logger, strictPort).then(resolve, reject);
   });
   // server.listen is called inside listenWithRetry
   ready.then(() => {

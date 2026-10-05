@@ -16,11 +16,15 @@
   "icon": "assets/icon.svg",
   "bin": {
     "dsh-mneme": "bin/cli.mjs",
-    "dsh-mneme-mcp": "bin/dsh-mneme-mcp.mjs"
+    "dsh-mneme-mcp": "bin/dsh-mneme-mcp.mjs",
+    "dsh-mneme-serve": "bin/dsh-mneme-serve.mjs"
   },
   "exports": {
     ".": {
       "default": "./lib/index.js"
+    },
+    "./serve": {
+      "default": "./lib/serve.js"
     },
     "./client": {
       "default": "./lib/client.js"
