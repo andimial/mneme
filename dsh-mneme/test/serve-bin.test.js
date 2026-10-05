@@ -34,6 +34,21 @@ async function waitFor(fn, timeoutMs, what) {
   throw new Error(`timeout waiting for ${what}: ${lastErr?.message ?? lastErr}`);
 }
 
+test("serve bin: 值旗标缺值直接报错退出(--port 后无值不能落成 Number(true)=1)", { timeout: 30000 }, async () => {
+  // CodeRabbit on #364:--port 紧跟另一个旗标或结束时,旧解析把它存成 true,
+  // Number(true)=1 通过校验 → 静默改绑端口 1(EACCES 误导排错方向)。
+  const child = spawn(process.execPath, [BIN, "--memory-dir", mkdtempSync(join(tmpdir(), "mneme-serve-arg-")), "--port"], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stderr = "";
+  child.stderr.on("data", (d) => { stderr += d; });
+  const [code] = await new Promise((resolve) => {
+    child.on("exit", (c) => resolve([c]));
+  });
+  assert.notEqual(code, 0, "missing value must exit non-zero");
+  assert.ok(stderr.includes("缺少参数值"), `stderr should name the missing value, got: ${stderr.slice(-200)}`);
+});
+
 test("serve bin: spawn 冒烟;daemon 与宿主进程同库互写互读", { timeout: 120000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mneme-serve-bin-"));
 

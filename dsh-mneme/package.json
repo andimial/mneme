@@ -23,6 +23,9 @@
     ".": {
       "default": "./lib/index.js"
     },
+    "./serve": {
+      "default": "./lib/serve.js"
+    },
     "./client": {
       "default": "./lib/client.js"
     },

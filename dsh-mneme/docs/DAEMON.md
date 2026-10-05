@@ -25,6 +25,7 @@ dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>] [--embed <prov
 - `--embed`:语义检索提供方。`local`(默认:自管 runtime 与嵌入模型缺失时**自动取件**,download 档,约 200MB;失败降级关键词并打可操作日志)| `ollama` | `openai`(读宿主面板存的 vector-config)| `off`(纯关键词 + BM25)。取件来源可用 env 换道:`DSH_MNEME_RUNTIME_DIR`(自管 runtime 目录)、`DSH_MNEME_RUNTIME_TARBALL_DIR`(离线 .tgz 目录,优先于联网)、`DSH_MNEME_RUNTIME_MIRROR`(registry 镜像前缀)。
 - port/host 解析链与宿主「外部访问」一致:显式参数 > kv `external_api` 持久值 > 默认 8790 / 127.0.0.1。
 - token 与 DSH 面板 / CLI **共用同一份**(kv `external_api`,首次启动自动生成并持久化)——三方零配置互通。
+- 安全:daemon 使用明文 HTTP,不提供原生 TLS。指定非回环 `--host` 时,请勿直接把服务暴露给不可信网络;远程访问请走 TLS 终止代理或 SSH 隧道。
 - stdout 只在就绪时打一行 `dsh-mneme-serve listening on http://host:port (pid N)`(机器可读,脚本/测试解析端口用);日志全走 stderr。
 - SIGINT/SIGTERM 优雅收库后 exit 0;Windows 强杀由 WAL 回放兜底。
 

@@ -145,9 +145,20 @@ export async function createServeRuntime({
     maintenance,
     semantic,
     tokenExisted,
-    /** 收尾:先停收请求再关库。node:sqlite 对未 finalize 语句可能抛,吞掉——WAL 会在下次打开时回放,已提交事务不丢。 */
-    dispose() {
-      try { api.server.close(); } catch { /* already closed */ }
+    /**
+     * 收尾：先停收新请求、等在途请求跑完，再关库——直接同步关库会让在途的
+     * PUT/POST 撞上已关的 store（500 或丢写）。closeIdleConnections 排干
+     * keep-alive 空闲连接（node ≥18.2，旧版无此 API 则跳过），否则 server.close
+     * 的回调要等 keep-alive 超时才触发。node:sqlite 对未 finalize 语句可能抛，
+     * 吞掉——WAL 会在下次打开时回放，已提交事务不丢。
+     */
+    async dispose() {
+      await new Promise((resolve) => {
+        try {
+          api.server.close(() => resolve());
+          api.server.closeIdleConnections?.();
+        } catch { resolve(); }
+      });
       try { semantic?.dispose(); } catch { /* 同上 */ }
       try { store.close(); } catch { /* 同上 */ }
     }

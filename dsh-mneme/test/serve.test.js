@@ -107,8 +107,9 @@ test("serve: dispose 后端口可复用(同端口连起两轮不踩 strictPort)"
   const rt = await createServeRuntime({ memoryDir: dir, port: 0, embed: "off" });
   await rt.api.ready;
   const port = rt.api.port;
-  rt.dispose();
-  // dispose 同步关库;端口释放可能有内核级迟滞,重试绑定而不是假设立即可用
+  // dispose 现为 async:等 server.close 回调(在途请求排干)后再重绑
+  await rt.dispose();
+  // 端口释放可能有内核级迟滞,重试绑定而不是假设立即可用
   let rebound = null;
   for (let i = 0; i < 10 && !rebound; i++) {
     try {
@@ -124,7 +125,7 @@ test("serve: dispose 后端口可复用(同端口连起两轮不踩 strictPort)"
     assert.ok(rebound, "port should be rebindable after dispose");
     assert.equal(rebound.api.port, port);
   } finally {
-    rebound?.dispose();
+    await rebound?.dispose();
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* 同上 */ }
   }
 });
