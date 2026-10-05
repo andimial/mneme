@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+## 🆕 新增
+
+- **独立服务 daemon（`dsh-mneme-serve`，#363）**：mneme 现在能在 DSH 宿主之外常驻——`src/serve.js` 的 `createServeRuntime` 用最小装配（store → settings → mirror → service → maintenance → standalone API，每步锚定 index.js 装配行号）把数据面跑成独立进程，第三方集成（网页端桥接等）不必为挂载记忆库而保持 DSH 开机。第一期刻意无 LLM：巩固（autoDream）与蒸馏结构性不在 daemon 内，这是与宿主「单写者」的机械保证，不靠用户自觉；检索为关键词 + BM25（向量由后续 PR 抽取 semantic 装配后接入）。token 与 DSH 面板/CLI 共用同一 kv 凭证，端口/主机解析链与外部访问一致；`createStandaloneApi` 新增 `strictPort` 选项——daemon 的配置端口被占即报错退出而非顺延（第三方把 URL 写死，静默换端口等于坏），不传该选项的宿主旁路行为不变。`/search` 照常落 recall_runs，第三方检索的复用统计不缺数。多进程共存（daemon 与宿主同库互写互读）有专门回归锁；已知限制（双进程去重竞态、镜像双写、版本偏斜）见 docs/DAEMON.md。
+
 ## [0.8.12] - 2026-10-01
 
 ## 🐛 修复

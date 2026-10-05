@@ -159,6 +159,7 @@ The standalone external API (`src/api-standalone.js`) and the `bin/cli.mjs` clie
 - Keep the route surface read/write on memories only; new routes need tests in `test/standalone-api.test.js` (they spin the real server on port 0).
 - Auth additions/changes must keep `timingSafeEqual` token comparison and the `GET /health` exception.
 - The CLI is dependency-free by contract - do not add imports to `bin/cli.mjs`.
+- The standalone daemon (`bin/dsh-mneme-serve.mjs` → `src/serve.js`) is exempt from that contract: it mounts `lib/serve.js` by design. Keep it a pure data plane — no LLM handle, no dream/summarize path (single-writer guarantee vs. the host), and keep `strictPort` semantics (busy configured port = hard error; the in-host sidecar keeps its hop-and-fallback recovery).
 
 ## Issue Reporting Requirements (read this first)
 

@@ -542,3 +542,30 @@ test("GET /search honors the occurred_at window", async () => {
     close();
   }
 });
+
+test("strictPort: busy port rejects instead of hopping; default path still hops", async () => {
+  // daemon 语义锁(#363):strictPort 下配置端口被占 = 配置错误,明确失败 ——
+  // 顺延会让把 URL 写死的第三方客户端静默打到错误端口。占口用裸 net server
+  // (OS 分配,不与并行测试抢固定号)。
+  const { default: net } = await import("node:net");
+  const blocker = net.createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  const busyPort = blocker.address().port;
+
+  const store = createStore(":memory:");
+  const service = createService({ store, mirror: null, config: {} });
+  const settings = createSettings(store.db);
+  try {
+    const strict = createStandaloneApi({ service, store, config: {}, settings, logger: null, port: busyPort, strictPort: true });
+    await assert.rejects(strict.ready, (err) => err?.code === "EADDRINUSE");
+
+    // 默认路径(不传 strictPort)行为不变:顺延成功;具体端口不断言(避免抢号)。
+    const hopping = createStandaloneApi({ service, store, config: {}, settings, logger: null, port: busyPort });
+    await hopping.ready;
+    assert.notEqual(hopping.port, busyPort, "default policy hops off a busy port");
+    hopping.server.close();
+  } finally {
+    blocker.close();
+    store.close();
+  }
+});
