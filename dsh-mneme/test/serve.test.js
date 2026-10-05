@@ -163,6 +163,17 @@ test("serve: 注入假 embedder → 写入即嵌入,vector 轴接管检索;auto 
     const autoRes = await fetch(`${base}/search?q=${encodeURIComponent("向量注入冒烟")}&mode=auto`, { headers: auth });
     assert.equal(autoRes.status, 200);
     assert.ok(((await autoRes.json()).items ?? []).some((m) => m.title === "向量注入冒烟"));
+
+    // /context 全链路（issue #370）：daemon 与宿主外部访问共用同一工厂，注入
+    // 候选端点一并带出——同一 embedder 句柄喂查询向量，injectCandidates 走通。
+    const ctxRes = await fetch(`${base}/context?q=${encodeURIComponent("向量注入冒烟")}`, { headers: auth });
+    assert.equal(ctxRes.status, 200);
+    const ctxBody = await ctxRes.json();
+    assert.ok((ctxBody.items ?? []).some((m) => m.title === "向量注入冒烟"));
+    // #217 注入分账：injectCandidates 的曝光型访问事件落 recall_runs
+    // （mode='inject'），第三方的注入统计与宿主注入同表同口径。
+    const injectRuns = rt.store.db.prepare("SELECT count(*) AS c FROM recall_runs WHERE mode = 'inject'").get().c;
+    assert.ok(injectRuns >= 1, "injection access must be receipted in recall_runs (#217)");
   } finally {
     rt.dispose();
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* 同上 */ }

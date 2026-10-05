@@ -316,6 +316,30 @@ test("entity: / attr: 的 scope 闸在触达之前：出局的行不被回温，
   assert.equal(store.getById(theirs.id).last_accessed_at ?? null, null, "出局行不该被回温");
 });
 
+test("injectCandidates：strictScope 硬过滤必须晚于图召回合并（graphHint 不能把出局行带回来）", async () => {
+  // 回归锁（CodeRabbit on #371 的可达性分析，#17 A3 的图召回分支）：entityRecall
+  // 本身不做 scope 门控，硬过滤原本长在图合并**之前**——过滤出局的显式他域行会
+  // 被图召回重新打上 graphHint 带回候选池，graphInjectHint 开时即作为线索行进入
+  // 注入块（宿主注入与 /context 同受影响）。硬过滤移到图合并之后、pin 池之前封死。
+  // 夹具注意：只挂 theirs 一条——挂满全 battery 会让每行都成 graphHint 行、被
+  // graphInjectBudget=1 的线索预算挤到失真（写这条测试时踩过）。
+  const { store, service } = setup({
+    scopeEnabled: true, strictScope: true, entityRecallEnabled: true, graphInjectHint: true
+  });
+  const rows = saveScopeBattery(store);
+  linkToEntity(store, "阿尔托", [rows.theirs]);
+
+  const asMe = service.injectCandidates({ query: "阿尔托", maxItems: 5, scope: { agent_scope: "me", workspace_scope: null } });
+  const titles = asMe.map((m) => m.title);
+  assert.ok(!titles.includes("theirs"), "图召回不得把显式他域行带进注入块");
+  assert.ok(titles.includes("global"), "未挂联的可见行照常经规则路进块（排除真空假绿）");
+
+  // 正向对照：原主人自己取，显式行仍在（作为线索行或普通行均可——否则是
+  // 「谁都看不到」的假绿）。
+  const asOther = service.injectCandidates({ query: "阿尔托", maxItems: 5, scope: { agent_scope: "other", workspace_scope: null } });
+  assert.ok(asOther.some((m) => m.title === "theirs"), "命中当前 agent 的显式行必须可见");
+});
+
 test("scope 闸先于 topK 截断：出局的候选不占名额（topK=1 仍有可见结果）", async () => {
   // 回归锁（评审发现）：先 slice 再 filter 的话，排在前面那条被闸掉的候选会占住唯一的
   // 槽位，明明还有可见匹配却返回空数组。用 topK=1 把次序钉死——排序不动，只是闸门要插

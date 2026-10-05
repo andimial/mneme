@@ -6,14 +6,14 @@
 
 daemon 是**数据面**,不是第二个宿主:
 
-- **有**:存储(SQLite)、检索(关键词 + BM25 + 向量,`/search` 统一召回,与宿主共用 `src/semantic.js` 同一套装配)、镜像同步与人改合并、`/maintenance/reclaim`、`/bootstrap`、recall_runs 检索回执。
+- **有**:存储(SQLite)、检索(关键词 + BM25 + 向量,`/search` 统一召回,与宿主共用 `src/semantic.js` 同一套装配)、注入候选(`/context`,issue #370,与宿主注入管线同一份 `injectCandidates`)、镜像同步与人改合并、`/maintenance/reclaim`、`/bootstrap`、recall_runs 检索/注入回执。
 - **没有(第一期,无 LLM)**:巩固(autoDream)、蒸馏(autoSummarize)、实体抽取、sleep、注入/工具/面板路由。前两者是**结构性缺失**而非开关——daemon 装配里没有 LLM 句柄,巩固只属于 DSH 宿主进程。这就是 daemon 与宿主「单写者」的机械保证(AGENTS.md externalApi/autoDream 单侧纪律的 daemon 版),不依赖用户自觉。
 
 与宿主装配(`src/index.js` apply)的关系:`src/serve.js` 只搬数据面那一半,每步注释锚定 index.js 来源行号;刻意不抽公共装配函数(apply 其余环节与宿主 ctx 纠缠,防御段纪律「最后动或不动」)。装配漂移风险由 `test/serve-bin.test.js` 的多进程共存用例兜底(两进程真开同一个库互写互读)。
 
 ## 2. 对外接口
 
-路由面 = `src/api-standalone.js` 全表(health/status/profile/rules/memories 读写/search/maintenance/bootstrap),鉴权同源(Bearer + timingSafeEqual,`GET /health` 免鉴权)。**零新路由**;唯一新选项是 `strictPort`(见 §4)。
+路由面 = `src/api-standalone.js` 全表(health/status/profile/rules/memories 读写/search/context/maintenance/bootstrap),鉴权同源(Bearer + timingSafeEqual,`GET /health` 免鉴权)。daemon 自身零新路由;#370 的 `/context` 落在 api-standalone 工厂里,宿主外部访问与 daemon 自动同享(参数、scope 语义与 recall_runs 注入分账见包 README 路由表)。daemon 侧唯一自有选项是 `strictPort`(见 §4)。
 
 CLI:
 
@@ -31,10 +31,10 @@ dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>] [--embed <prov
 
 ## 3. 内部文件
 
-- `src/serve.js` — `createServeRuntime({memoryDir, port, host, logger, strictPort, embed, embedder, reranker})`:装配链 createStore → createSettings → createMirror → createService(最小 config)→ recoverMirror → 人改镜像合并闭包 → vectorIndex + semantic → recall recorder → createMaintenance → createStandaloneApi,每步锚定 index.js 行号。返回 `{api, store, service, settings, maintenance, semantic, tokenExisted, dispose}`;第三方可 import 它自行托管生命周期(bin 只是薄壳),`embedder/reranker` 参数供注入自管嵌入。
+- `src/serve.js` — `createServeRuntime({memoryDir, port, host, logger, strictPort, embed, embedder, reranker})`:装配链 createStore → createSettings → createMirror → createService(最小 config)→ recoverMirror → 人改镜像合并闭包 → vectorIndex + semantic → recall recorder → createMaintenance → createStandaloneApi(带 `embedder: embedder ?? semantic?.embedder ?? null`,供 `/context` 查询嵌入),每步锚定 index.js 行号。返回 `{api, store, service, settings, maintenance, semantic, tokenExisted, dispose}`;第三方可 import 它自行托管生命周期(bin 只是薄壳),`embedder/reranker` 参数供注入自管嵌入。
 - `src/semantic.js` — embedder/reranker 装配 + boot 自动回填,**纯搬移自 index.js**(PR2),宿主与 daemon 共用同一份;`backfillMissingEmbeddings` 经 index.js barrel 再出口(测试照旧从 index.js import)。
 - `bin/dsh-mneme-serve.mjs` — CLI 壳。独立成 bin 而非 cli.mjs 子命令:CONTRIBUTING 禁止给 cli.mjs 加 import;命名循 dsh-mneme-mcp 先例。
-- `src/api-standalone.js` 的 `strictPort` 选项 — 唯一的数据面改动,默认关闭。
+- `src/api-standalone.js` 的 `strictPort` 选项 — daemon 自己引入的唯一数据面改动,默认关闭(daemon 侧显式传 true)。#370 起该工厂另增 `/context` 路由与可选 `embedder` 注入,宿主外部访问同享。
 
 ## 4. 已知坑
 
