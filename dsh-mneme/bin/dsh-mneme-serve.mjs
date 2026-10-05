@@ -23,18 +23,27 @@ const PKG = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8"));
 
 const USAGE = `${BIN_NAME} — run the mneme data plane as a standalone service (no DSH required)
 
-Usage: dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>]
+Usage: dsh-mneme-serve [--memory-dir <dir>] [--port <n>] [--host <addr>] [--embed <provider>]
 
 Options:
   --memory-dir <dir>  data directory (default: ~/.dsh/memory, same as the plugin)
   --port <n>          HTTP port (default: persisted external_api port, else 8790)
   --host <addr>       bind address (default: persisted external_api host, else 127.0.0.1)
+  --embed <provider>  semantic retrieval: local (default, downloads the ONNX runtime
+                      + embedding model on first boot) | ollama | openai (uses the
+                      vector-config saved by the DSH panel) | off (keyword + BM25 only)
   -h, --help          show this help
   -V, --version       print version
 
 Auth: Bearer token is shared with the DSH panel / CLI (kv "external_api" in
 memory.db); it is generated on first boot. A busy configured port is a hard
-error — the DSH external API and this daemon must not share a port (pick one).`;
+error — the DSH external API and this daemon must not share a port (pick one).
+
+Environment (runtime provisioning, local provider only):
+  DSH_MNEME_MEMORY_DIR            data directory override
+  DSH_MNEME_RUNTIME_DIR           self-managed runtime dir (default ~/.dsh/mneme/runtime)
+  DSH_MNEME_RUNTIME_TARBALL_DIR   offline .tgz dir preferred over the network
+  DSH_MNEME_RUNTIME_MIRROR        npm registry mirror prefix (e.g. npmmirror)`;
 
 /** 极简 argv 解析(--k=v / --k v / 旗标);够用即可,完整 CLI 在 bin/cli.mjs。 */
 function parseArgv(argv) {
@@ -93,7 +102,21 @@ async function main(argv) {
   }
   const host = typeof args.host === "string" && args.host ? args.host : undefined;
 
-  const rt = createServeRuntime({ memoryDir, port, host, logger });
+  let embed = "local";
+  if (args.embed !== undefined) {
+    if (typeof args.embed !== "string" || !["off", "local", "ollama", "openai"].includes(args.embed)) {
+      fail(`--embed 需要 off|local|ollama|openai,收到: ${String(args.embed)}`);
+    }
+    embed = args.embed;
+  }
+
+  let rt;
+  try {
+    // 装配是异步的:embed=local 时可能要先取件 runtime(download 档,失败内部降级)
+    rt = await createServeRuntime({ memoryDir, port, host, logger, embed });
+  } catch (err) {
+    fail(`启动失败: ${err?.message ?? err}`);
+  }
   try {
     await rt.api.ready;
   } catch (err) {

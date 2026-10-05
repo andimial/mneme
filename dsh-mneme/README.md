@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@modusensus/dsh-mneme?color=blue&label=npm)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![tests](https://img.shields.io/badge/tests-1535%20passed-success)](https://github.com/slow-stack/mneme)
+[![tests](https://img.shields.io/badge/tests-1537%20passed-success)](https://github.com/slow-stack/mneme)
 [![CI](https://img.shields.io/github/actions/workflow/status/slow-stack/mneme/ci.yml)](https://github.com/slow-stack/mneme/actions)
 [![node](https://img.shields.io/badge/node-22%2B-blue)](https://nodejs.org)
 [![npm downloads](https://img.shields.io/npm/d18m/@modusensus/dsh-mneme.svg?color=blue&label=downloads)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
@@ -522,11 +522,12 @@ dsh-mneme config show                                # 查看当前配置（toke
 ```bash
 dsh-mneme-serve                                              # 默认 ~/.dsh/memory + 8790
 dsh-mneme-serve --memory-dir "D:\my mem" --port 8790 --host 127.0.0.1
+dsh-mneme-serve --embed off                                  # 纯关键词 + BM25(不取件模型)
 ```
 
 - **鉴权与端口**：Bearer token 与 DSH 面板 / CLI 共用同一份（kv `external_api`，首次启动自动生成并持久化到 `memory.db`）；端口/主机解析链与「外部访问」一致（显式参数 > 持久值 > 默认 8790/127.0.0.1）。配置端口被占会**直接报错退出**（不做端口顺延）——第三方把 URL 写死，静默换端口等于坏。因此 **daemon 与 DSH 的「外部访问」二选一**，不要同端口同开。
 - **安全**：daemon 使用明文 HTTP，不提供原生 TLS。指定非回环 `--host` 时，请勿直接把服务暴露给不可信网络；远程访问请走 TLS 终止代理或 SSH 隧道。
-- **能力边界（第一期，无 LLM）**：存储 / 检索（关键词 + BM25）/ 镜像同步与人改合并 / `POST /maintenance/reclaim` / `/bootstrap` 全可用；巩固（autoDream）与蒸馏不在 daemon 内——巩固只属于 DSH 宿主进程，这是与宿主「单写者」的机械保证。向量检索暂缺（后续版本接入），`/search` 退化为关键词 + BM25 属预期。
+- **能力边界（第一期，无 LLM）**：存储 / 检索（关键词 + BM25 + 向量）/ 镜像同步与人改合并 / `POST /maintenance/reclaim` / `/bootstrap` 全可用；巩固（autoDream）与蒸馏不在 daemon 内——巩固只属于 DSH 宿主进程，这是与宿主「单写者」的机械保证。`--embed` 默认 `local`（自管 runtime 与嵌入模型缺失时自动取件，约 200MB；失败降级关键词并打日志），也可选 `ollama` / `openai`（读宿主面板的 vector-config）/ `off`。
 - **检索回执**：daemon 的 `/search` 同样落 `recall_runs`，第三方检索的复用统计不缺数。
 - **生命周期**：stdout 仅就绪时打一行 `dsh-mneme-serve listening on http://host:port (pid N)`（供脚本解析实际端口），日志走 stderr；SIGINT/SIGTERM 优雅收库，Windows 强杀由 WAL 回放兜底。
 - **已知限制**：与 DSH 同时运行属设计内场景（WAL 多进程并发），但去重是先查后写、库层无 UNIQUE 约束，双进程并发写同一 `(type, title, scope)` 有极小概率产生重复；daemon 与插件请同版本升级。细节与坑清单见 [docs/DAEMON.md](docs/DAEMON.md)。
@@ -600,7 +601,7 @@ src/
 ├── api.js            # HTTP 路由（Web 面板数据通道，含 /conflicts 冲突队列）
 └── index.js          # 插件接线
 lib/                  # src 的同步分发产物（npm run sync；发布前由 root prepack 的 check-sync.js 校验一致性；唯一手写例外 lib/client.js——Web 面板 bundle，sync 不覆盖）
-test/                 # 1535 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
+test/                 # 1537 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
 scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压测 · sync-lib.js 同步 · check-sync.js 发布闸门 · benchmark-recall.js / benchmark-embed.js / benchmark-rerank.js 基准 · sync-test-badge.mjs 测试徽章 · build-runtime-manifest.mjs 运行时清单
 ```
 
@@ -609,7 +610,7 @@ scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压
 ```bash
 cd dsh-mneme
 npm install        # 安装 peer 依赖（以 devDependencies 形式，用于本地测试）
-npm test           # 运行 1535 个测试
+npm test           # 运行 1537 个测试
 npm run stress     # 三轴线压测：长会话检索 / 冲突仲裁 / 多 Agent 并发（离线 mock LLM）
 npm run sync       # 把 src/ 同步到 lib/（发布时由 prepack 钩子自动执行）
 ```
