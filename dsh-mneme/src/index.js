@@ -479,7 +479,9 @@ export const apply = (ctx, config) => {
   // kv and is auto-generated on first boot by createStandaloneApi. Binding a
   // non-loopback host is the operator's documented responsibility.
   if ((settings.getExternalApi?.()?.enabled ?? cfg.externalApiEnabled) === true) {
-    const standalone = createStandaloneApi({ service, store, config: cfg, logger: ctx.logger, settings, maintenance });
+    // embedder 交给 /context 的查询嵌入（issue #370）：与 service.setEmbedder 同一
+    // 实例（semantic.js 装配产物），lightMode 下为 null，路由侧降级规则档。
+    const standalone = createStandaloneApi({ service, store, config: cfg, logger: ctx.logger, settings, maintenance, embedder });
     disposers.push(() => standalone.server.close());
     standalone.ready.catch((error) => {
       ctx.logger?.warn?.(`[dsh-mneme] standalone API failed to start: ${String(error)}`);

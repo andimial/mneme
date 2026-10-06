@@ -1662,11 +1662,6 @@ export function createService({ store, mirror, config, onWrite, logger, document
         }
       } catch { /* topic re-rank unavailable: keep rule-based order */ }
     }
-    // v0.8.0 A3（issue #17）：strictScope 硬过滤同样作用于自动注入——scoped 记忆
-    // 泄进无关注入上下文是最典型的越权通道，检索侧过滤挡不住这里。
-    if (config?.strictScope === true && scope) {
-      candidates = candidates.filter((m) => isVisibleInScope(m, scope));
-    }
     // #24 块3：图召回候选打标。entityRecall 只在 entityRecallEnabled 开启时
     // 有产出，这里为命中者贴 graphHint 标签——注入侧据此（a）graphInjectHint
     // 开=标成 [检索线索] 前缀的线索行（独立预算），（b）关=线索行只参与排序
@@ -1686,6 +1681,16 @@ export function createService({ store, mirror, config, onWrite, logger, document
           ];
         }
       } catch { /* graph hint is best-effort */ }
+    }
+    // v0.8.0 A3（issue #17）：strictScope 硬过滤同样作用于自动注入——scoped 记忆
+    // 泄进无关注入上下文是最典型的越权通道，检索侧过滤挡不住这里。
+    // 位置纪律：必须在**图召回合并之后**、pin 池之前——entityRecall 不做 scope
+    // 门控，过滤放在它前面时，出局行会被图召回重新打上 graphHint 带回候选池
+    // （graphInjectHint 开时作为线索行进注入块；CodeRabbit on #371 的可达性分析，
+    // /context 与宿主注入同受影响）。pin 池 eligible 取自本过滤之后的候选，
+    // 顺带保证越权行进不了 pin。
+    if (config?.strictScope === true && scope) {
+      candidates = candidates.filter((m) => isVisibleInScope(m, scope));
     }
     // #249 第一批：B1 pin 池。取在相关性排序之后、轮换之前——取谁按此刻的候选
     // 次序（即相关性次序），取到后从候选中摘除，于是下面的轮换重排碰不到它们

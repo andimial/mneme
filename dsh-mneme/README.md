@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@modusensus/dsh-mneme?color=blue&label=npm)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![tests](https://img.shields.io/badge/tests-1537%20passed-success)](https://github.com/slow-stack/mneme)
+[![tests](https://img.shields.io/badge/tests-1546%20passed-success)](https://github.com/slow-stack/mneme)
 [![CI](https://img.shields.io/github/actions/workflow/status/slow-stack/mneme/ci.yml)](https://github.com/slow-stack/mneme/actions)
 [![node](https://img.shields.io/badge/node-22%2B-blue)](https://nodejs.org)
 [![npm downloads](https://img.shields.io/npm/d18m/@modusensus/dsh-mneme.svg?color=blue&label=downloads)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
@@ -465,7 +465,8 @@ dsh web
 | `POST` | `/memories` | 新增记忆 `{type,title,content,importance?,tags?,source?,sensitivity?,occurred_at?,agent_scope?,workspace_scope?}`；响应含 `action: created\|merged` |
 | `PUT` | `/memories/:id` | 局部更新 `{title?,content?,type?,importance?,tags?,reason?,agent_scope?,workspace_scope?}`；content 改写按 human_override 入档 |
 | `DELETE` | `/memories/:id` | 删除记忆 |
-| `GET` | `/search?q&mode=keyword\|vector\|hybrid\|auto&topK&occurred_from&occurred_to` | 搜索（关键词 / 向量 / hybrid=向量领位关键词补位 / 自动） |
+| `GET` | `/search?q&mode=keyword\|vector\|hybrid\|auto&topK&occurred_from&occurred_to&agent_scope&workspace_scope` | 搜索（关键词 / 向量 / hybrid=向量领位关键词补位 / 自动）。scope 两参声明调用方身份（不传 = 不解析，行为与旧版一致；任一给出则 strictScope 硬过滤与 A2 软加权随之生效） |
+| `GET` | `/context?q&topK&threshold&agent_scope&workspace_scope` | 注入候选一站式聚合（issue #370，#363 承诺）：宿主注入管线 `injectCandidates` 全语义（优先级分层 / 编码门控 / heat / scope 软加权 / hybrid 语义路 / pin 前置）+ 画像 + 规则，返回 `{profile, rules, items, pinnedCount}` 结构化条目，不含渲染文本。`threshold` 是 **importance 阈值**（默认 3，与 `/search` 的相似度阈值同名不同义）；`topK` 默认 5（对齐宿主 `maxInjectedItems`）；scope 语义与 `/search` 同口径；跨轮轮换 / 热记忆 / 时间前缀不含（调用方自管）；recall_runs 注入分账与宿主注入同口径（#217 `mode='inject'`） |
 | `POST` | `/bootstrap` | 冷启动（v0.8.4）：从仓库目录反向构建初始记忆，body `{dir}` 必填；幂等（(type,title,scope) 去重 + `_overwrite` 原地刷新），零 LLM、必有产出 |
 
 ### curl 示例
@@ -517,7 +518,7 @@ dsh-mneme config show                                # 查看当前配置（toke
 
 ### 独立服务（daemon，`dsh-mneme-serve`）
 
-不启动 DSH 也能让记忆库对外服务：`dsh-mneme-serve` 在宿主之外组装同一套 lib，把数据面跑成常驻进程（路由与鉴权与「独立外部 API」完全同源）。适用场景：第三方集成（如 [Mneme Bridge](https://github.com/slow-stack/mneme/discussions/363) 这类网页端桥接）需要长期挂载记忆库，而 DSH 不必一直开着。
+不启动 DSH 也能让记忆库对外服务：`dsh-mneme-serve` 在宿主之外组装同一套 lib，把数据面跑成常驻进程（路由与鉴权与「独立外部 API」完全同源）。适用场景：第三方集成（如 [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) 这类网页端桥接，见下方[社区适配器](#社区适配器)）需要长期挂载记忆库，而 DSH 不必一直开着。
 
 ```bash
 dsh-mneme-serve                                              # 默认 ~/.dsh/memory + 8790
@@ -556,6 +557,16 @@ Claude Code 挂载示例（项目根 `.mcp.json`；token 在面板「设置 → 
 ```
 
 未全局安装 npm 包时，把 `command` 换成 `npx`、加 `args: ["-p", "@modusensus/dsh-mneme", "dsh-mneme-mcp"]` 即可。
+
+## 社区适配器
+
+以下项目由社区维护，把 mneme 接入第三方平台或宿主。它们不是本仓库的一部分，兼容性由各自维护者跟进——升级 mneme 后如遇接口变更，请优先查看对应项目的 release note。
+
+| 项目 | 平台 | 说明 |
+|------|------|------|
+| [Mneme-Bridge](https://github.com/SternChiri/Mneme-Bridge) | DeepSeek 网页端 | 浏览器扩展（MV3）+ 本地 Node 服务：网页端会话蒸馏进 mneme 记忆库，DSH 侧记忆按话题回注网页对话，两侧共享同一份记忆。embedded（直接挂载 mneme lib）与 remote（standalone API，推荐配合 [`dsh-mneme-serve`](docs/DAEMON.md)）双模式 |
+
+> 想被收录？在 [Discussions](https://github.com/slow-stack/mneme/discussions) 开帖介绍你的项目，或直接提 PR 补充本表。
 
 ## 🏗️ 架构
 
@@ -601,7 +612,7 @@ src/
 ├── api.js            # HTTP 路由（Web 面板数据通道，含 /conflicts 冲突队列）
 └── index.js          # 插件接线
 lib/                  # src 的同步分发产物（npm run sync；发布前由 root prepack 的 check-sync.js 校验一致性；唯一手写例外 lib/client.js——Web 面板 bundle，sync 不覆盖）
-test/                 # 1537 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
+test/                 # 1546 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
 scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压测 · sync-lib.js 同步 · check-sync.js 发布闸门 · benchmark-recall.js / benchmark-embed.js / benchmark-rerank.js 基准 · sync-test-badge.mjs 测试徽章 · build-runtime-manifest.mjs 运行时清单
 ```
 
@@ -610,7 +621,7 @@ scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压
 ```bash
 cd dsh-mneme
 npm install        # 安装 peer 依赖（以 devDependencies 形式，用于本地测试）
-npm test           # 运行 1537 个测试
+npm test           # 运行 1546 个测试
 npm run stress     # 三轴线压测：长会话检索 / 冲突仲裁 / 多 Agent 并发（离线 mock LLM）
 npm run sync       # 把 src/ 同步到 lib/（发布时由 prepack 钩子自动执行）
 ```
