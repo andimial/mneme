@@ -325,8 +325,18 @@ export function createService({ store, mirror, config, onWrite, logger, document
    * The hook itself is expected to resolve to { ok:boolean } and never throw;
    * a thrown rejection is swallowed here as a final fail-safe.
    */
+  // #372: 事务内的抽取曾经被这里直接丢弃（注释写 deferred，实际 transaction()
+  // 从不补跑）——自动蒸馏的所有写入都裹在 service.transaction() 里，session:* 来源
+  // 的记忆因此 100% 抽不到实体。改为入队，事务提交后由 transaction() 的 drain 补跑。
+  const pendingEntity = [];
+
   function scheduleEntityExtraction(memory) {
-    if (txDepth > 0) return; // deferred to the transaction's commit
+    if (txDepth > 0) {
+      // 队列只兜内存压力，不改变 fire-and-forget 语义；超限丢最旧的。
+      if (pendingEntity.length >= EMBED_PENDING_MAX) pendingEntity.shift();
+      pendingEntity.push(memory);
+      return;
+    }
     if (!config.entityExtractionEnabled || !entityExtractor) return;
     try {
       entityExtractor(memory).catch((err) => {
@@ -1125,9 +1135,11 @@ export function createService({ store, mirror, config, onWrite, logger, document
   function transaction(fn) {
     store.db.exec("BEGIN");
     txDepth++;
+    let committed = false;
     try {
       const result = fn();
       store.db.exec("COMMIT");
+      committed = true;
       return result;
     } catch (error) {
       try { store.db.exec("ROLLBACK"); } catch { /* store may be closed */ }
@@ -1142,6 +1154,16 @@ export function createService({ store, mirror, config, onWrite, logger, document
         logger?.warn?.("mirror sync failed after transaction:", syncResult?.error);
       }
       notifyWrite();
+      // #372: 补跑事务内排队的实体抽取——只在 COMMIT 成功后（此时 txDepth 已归零，
+      // scheduleEntityExtraction 走正常触发路径）；回滚路径丢弃队列，绝不对已回滚
+      // 的行抽实体。嵌套事务由最外层 drain（txDepth 仍 >0 时入队等外层）。
+      if (committed) drainPendingEntityExtraction();
+    }
+  }
+
+  function drainPendingEntityExtraction() {
+    while (pendingEntity.length) {
+      scheduleEntityExtraction(pendingEntity.shift());
     }
   }
 
@@ -1355,6 +1377,10 @@ export function createService({ store, mirror, config, onWrite, logger, document
       afterSync("write");
       notifyWrite();
       scheduleEmbed(result);
+      // #372: 合并分支此前不触发抽取——并入的新内容永远不进实体面，目标行若当初
+      // 也是事务内创建的就彻底没有实体。saveAttr 按 (entity_id, attr_key) 先失活旧值
+      // 再插入，重抽幂等（重抽同键只会刷新值，不堆重复行）。
+      scheduleEntityExtraction(result);
       return { action: "merged", memory: result };
     }
     // #254 写入准入：决策形状由 write-admission.js 一次定死（阶段一定死、之后只加

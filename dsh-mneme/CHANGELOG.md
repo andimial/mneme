@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+## 🐛 修复
+
+- **事务内创建的记忆实体抽取被静默丢弃（#372）**：`scheduleEntityExtraction` 在事务内直接 return（注释写 deferred，实际 `transaction()` 从不补跑），而自动蒸馏的全部写入都裹在 `service.transaction()` 里——`session:*` 来源的记忆自 0.8.x 起 100% 抽不到实体（报告者库内数据：9-25 后 337 条自动蒸馏记忆 0 抽取 0 审计）。修法：事务内入队、COMMIT 成功后由事务本体补跑（回滚路径丢弃，绝不对已回滚的行抽取）；`saveWithDedupe` 的合并分支补触发抽取（此前并入的新内容永不进实体面；`saveAttr` 按 (entity_id, attr_key) 先失活再插入，重抽幂等）；`writeAudit` 在 LLM 路由解析失败（modelId 为空）时对非 ok 状态补一条 warn——消灭 #108 同款「零实体零日志」盲区。报告者（lqs50）三条主发现全部对源码坐实；其建议的「finally 里补跑」已修正为仅 COMMIT 成功后补跑。
+
 ## [0.8.14] - 2026-10-06
 
 ## 🐛 修复

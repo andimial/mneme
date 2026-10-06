@@ -87,7 +87,14 @@ export function createEntityStreamAdapter({ llm, agentDefaultModel, logger, serv
       // 记账是 best-effort：写审计行失败只 warn，绝不反噬抽取本身（CONTRIBUTING
       // 的 fail-safe 硬约定）。
       const writeAudit = (status, errorMessage) => {
-        if (config?.llmAudit?.enabled === false || !modelId || typeof service?.saveLlmAudit !== "function") return;
+        if (config?.llmAudit?.enabled === false || typeof service?.saveLlmAudit !== "function") return;
+        // #372: modelId 为空 = 路由解析失败——此前整个 writeAudit 静默 return，
+        // llm.stream 抛错也留不下任何行，正是 #108 要消灭的「零实体零日志」同款盲区。
+        // 空路由无法记账，但至少要留一条可解释的 warn，别让失败面完全不可见。
+        if (!modelId) {
+          if (status !== "ok") logger?.warn?.(`dsh-mneme: entity extraction ${status} without audit row (llm route unresolved: ${errorMessage ?? "no route"})`);
+          return;
+        }
         try {
           service.saveLlmAudit({
             timestamp,
