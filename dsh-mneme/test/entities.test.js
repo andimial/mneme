@@ -545,3 +545,50 @@ test("extractor omits empty provider/model and 'none' reasoning from options", a
   assert.deepEqual(captured, {}, "no provider/model/reasoning keys when unset");
   store.close();
 });
+
+// ============================================================ #372 事务内抽取被丢弃
+// 回归锁：此前 scheduleEntityExtraction 在 txDepth>0 时直接 return（注释写
+// deferred，实际 transaction() 从不补跑），自动蒸馏（summarize 全部走
+// service.transaction）的写入 100% 抽不到实体。三把锁：提交后补跑恰一次、
+// 回滚丢弃、合并分支也触发。锁的是「commit 才补跑」这个契约本身——任何一侧
+// 改回丢弃或回滚也补跑，这里当场红。
+test("#372: extraction queued inside transaction fires exactly once after commit", () => {
+  const { store, service } = makeService({ entityExtractionEnabled: true });
+  let calls = 0;
+  const seen = [];
+  service.setEntityExtractor((m) => { calls++; seen.push(m.title); return Promise.resolve({ ok: true }); });
+  service.transaction(() => {
+    service.saveWithDedupe({ type: "preference", title: "事务内创建", content: "x" });
+    // 事务内此刻不得触发（排进队列而不是丢弃，也不是立即跑）
+    assert.equal(calls, 0, "no extraction while txDepth > 0");
+  });
+  assert.equal(calls, 1, "extraction fires exactly once after commit");
+  assert.deepEqual(seen, ["事务内创建"]);
+  store.close();
+});
+
+test("#372: rolled-back transaction never extracts entities from rolled-back rows", () => {
+  const { store, service } = makeService({ entityExtractionEnabled: true });
+  let calls = 0;
+  service.setEntityExtractor(() => { calls++; return Promise.resolve({ ok: true }); });
+  assert.throws(() => {
+    service.transaction(() => {
+      service.saveWithDedupe({ type: "preference", title: "会被回滚", content: "x" });
+      throw new Error("boom");
+    });
+  }, /boom/);
+  assert.equal(calls, 0, "no extraction against rolled-back rows");
+  assert.equal(store.count(), 0, "row itself rolled back");
+  store.close();
+});
+
+test("#372: merged write path also schedules extraction", () => {
+  const { store, service } = makeService({ entityExtractionEnabled: true });
+  service.saveWithDedupe({ type: "project", title: "合并目标", content: "旧" });
+  let calls = 0;
+  service.setEntityExtractor(() => { calls++; return Promise.resolve({ ok: true }); });
+  const r = service.saveWithDedupe({ type: "project", title: "合并目标", content: "新内容" });
+  assert.equal(r.action, "merged");
+  assert.equal(calls, 1, "merged branch schedules extraction too");
+  store.close();
+});
