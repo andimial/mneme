@@ -592,3 +592,36 @@ test("#372: merged write path also schedules extraction", () => {
   assert.equal(calls, 1, "merged branch schedules extraction too");
   store.close();
 });
+
+// #372 复审补锁（CodeRabbit findings）：回滚条目滞留队列会被下一个成功事务误抽；
+// 无上限队列防 cap 重引「静默丢抽取」；嵌套事务内层提交不 drain（防自旋）。
+test("#372: inner rollback drops only inner entries; outer commit drains the rest", () => {
+  const { store, service } = makeService({ entityExtractionEnabled: true });
+  const seen = [];
+  service.setEntityExtractor((m) => { seen.push(m.title); return Promise.resolve({ ok: true }); });
+  service.transaction(() => {
+    service.saveWithDedupe({ type: "preference", title: "外层A", content: "x" });
+    try {
+      service.transaction(() => {
+        service.saveWithDedupe({ type: "preference", title: "内层回滚", content: "x" });
+        throw new Error("inner boom");
+      });
+    } catch { /* 内层回滚，外层继续 */ }
+    service.saveWithDedupe({ type: "preference", title: "外层B", content: "x" });
+  });
+  assert.deepEqual(seen.sort(), ["外层A", "外层B"], "inner rolled-back row never extracted; outer rows drain once");
+  assert.equal(store.count(), 2);
+  store.close();
+});
+
+test("#372: no unbounded cap — large transaction drains every entry", () => {
+  const { service } = makeService({ entityExtractionEnabled: true });
+  let calls = 0;
+  service.setEntityExtractor(() => { calls++; return Promise.resolve({ ok: true }); });
+  service.transaction(() => {
+    for (let i = 0; i < 150; i++) {
+      service.saveWithDedupe({ type: "preference", title: `批量${i}`, content: "x" });
+    }
+  });
+  assert.equal(calls, 150, "no silent drop at any queue cap");
+});

@@ -328,12 +328,13 @@ export function createService({ store, mirror, config, onWrite, logger, document
   // #372: 事务内的抽取曾经被这里直接丢弃（注释写 deferred，实际 transaction()
   // 从不补跑）——自动蒸馏的所有写入都裹在 service.transaction() 里，session:* 来源
   // 的记忆因此 100% 抽不到实体。改为入队，事务提交后由 transaction() 的 drain 补跑。
+  // 队列不设上限：元素只是对已落库行的引用（内存成本≈0），而 cap 丢最旧等于把
+  // 「抽取被静默丢弃」这个本修复要消灭的 bug 换个量级带回来；上限实际由事务内
+  // 写入批量决定。回滚时由 transaction() 截断到事务前的基线（见 ROLLBACK 路径）。
   const pendingEntity = [];
 
   function scheduleEntityExtraction(memory) {
     if (txDepth > 0) {
-      // 队列只兜内存压力，不改变 fire-and-forget 语义；超限丢最旧的。
-      if (pendingEntity.length >= EMBED_PENDING_MAX) pendingEntity.shift();
       pendingEntity.push(memory);
       return;
     }
@@ -1135,6 +1136,9 @@ export function createService({ store, mirror, config, onWrite, logger, document
   function transaction(fn) {
     store.db.exec("BEGIN");
     txDepth++;
+    // #372: 记住本层事务开始时的队列深度——回滚时截断回这里。本层（及更深的
+    // 嵌套层）入队的抽取随回滚一并丢弃，外层已提交未 drain 的条目不受牵连。
+    const baseline = pendingEntity.length;
     let committed = false;
     try {
       const result = fn();
@@ -1143,6 +1147,10 @@ export function createService({ store, mirror, config, onWrite, logger, document
       return result;
     } catch (error) {
       try { store.db.exec("ROLLBACK"); } catch { /* store may be closed */ }
+      // 回滚：丢弃本层入队的抽取请求，绝不对已回滚的行抽实体（CodeRabbit
+      // 复审抓出：仅靠 committed 门挡 drain 时，回滚条目会滞留队列、被下一个
+      // 成功事务误抽）。外层未提交的条目在 baseline 之前，原样保留。
+      pendingEntity.length = baseline;
       throw error;
     } finally {
       txDepth--;
@@ -1155,9 +1163,10 @@ export function createService({ store, mirror, config, onWrite, logger, document
       }
       notifyWrite();
       // #372: 补跑事务内排队的实体抽取——只在 COMMIT 成功后（此时 txDepth 已归零，
-      // scheduleEntityExtraction 走正常触发路径）；回滚路径丢弃队列，绝不对已回滚
-      // 的行抽实体。嵌套事务由最外层 drain（txDepth 仍 >0 时入队等外层）。
-      if (committed) drainPendingEntityExtraction();
+      // scheduleEntityExtraction 走正常触发路径）。嵌套事务的内层提交不 drain
+      // （txDepth 仍 >0 时 schedule 会重新入队，与 drain 形成自旋）——条目等最外层
+      // COMMIT 后统一补跑。
+      if (committed && txDepth === 0) drainPendingEntityExtraction();
     }
   }
 
