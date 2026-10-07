@@ -18,7 +18,9 @@ import { applyLightModePreset } from "../src/config.js";
 // ---- 测试基建 --------------------------------------------------------------
 
 // 假 LLM：按脚本出牌（每 stream() 消费一个脚本项），记录调用入参。
-// 脚本项：{ json }（成功回该 JSON）/ { error: true }（stream 抛错）/ { garbage: true }（不可解析输出）。
+// 脚本项：{ json }（成功回该 JSON）/ { error: true }（stream 抛错）/
+// { garbage: true }（不可解析输出）/ { hang: true }（挂起但响应 signal——真宿主
+// 的取消语义）/ { hangForever: true }（挂起且无视 signal——不守约的宿主）。
 function fakeLlm(script) {
   const calls = [];
   let i = 0;
@@ -29,7 +31,13 @@ function fakeLlm(script) {
       i += 1;
       calls.push({ options, messages: options.messages });
       if (step.error) throw new Error("boom: llm down");
-      if (step.hang) await new Promise(() => { /* 永不产出：超时用例 */ });
+      if (step.hang) {
+        await new Promise((_, rej) => {
+          if (options.signal?.aborted) { rej(new Error("aborted")); return; }
+          options.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+        });
+      }
+      if (step.hangForever) await new Promise(() => { /* 挂起且无视 signal */ });
       const text = step.garbage ? "抱歉我不能输出 JSON" : JSON.stringify(step.json);
       yield { type: "text-delta", text };
       yield { type: "usage", usage: { input_tokens: 100, output_tokens: 20 } };
@@ -228,7 +236,7 @@ test("lightMode：预设翻转 preInjectGate.enabled 且不污染用户配置对
   assert.equal(flat.heatEnabled, false, "平铺键照旧直赋（既有行为回归）");
 });
 
-test("判定超时：degraded 审计行 + 不缓存，下一帧可重试（CodeRabbit on #382）", async () => {
+test("判定超时：abort 底层流（真宿主守约）→ degraded 审计 + 不缓存 + 下一帧重试（CodeRabbit on #382）", async () => {
   const llm = fakeLlm([{ hang: true }, { json: { ids: [], reason: "recovered" } }]);
   const s = setup({ preInjectGate: { enabled: true } }, llm, { judgeTimeoutMs: 50 });
   seedPool(s.service);
@@ -239,9 +247,25 @@ test("判定超时：degraded 审计行 + 不缓存，下一帧可重试（CodeR
   assert.ok(rows.length >= 1);
   assert.equal(rows[0].status, "error", "超时按降级落账");
   assert.match(rows[0].error_message, /timeout/);
-  frame(s.memoryText, QUERY); // inFlight 已清 → 下一帧重试
+  frame(s.memoryText, QUERY); // abort 已让流停止（settled）→ 同 key 可重试
   await settle();
-  assert.equal(llm.calls.length, 2, "超时不占死 key，下一帧重新判定");
+  assert.equal(llm.calls.length, 2, "流停止后同 key 可重试");
+});
+
+test("判定超时且宿主无视 signal：该 key 进冷却，不叠新流（CodeRabbit on #382）", async () => {
+  const llm = fakeLlm([{ hangForever: true }]);
+  const s = setup({ preInjectGate: { enabled: true } }, llm, { judgeTimeoutMs: 50 });
+  seedPool(s.service);
+  frame(s.memoryText, QUERY);
+  // 超时 50ms + abort 宽限 2s（等流停止的判定）之后才写审计
+  await new Promise((r) => setTimeout(r, 2300));
+  const rows = gateRows(s.store);
+  assert.ok(rows.length >= 1);
+  assert.match(rows[0].error_message, /timeout/);
+  frame(s.memoryText, QUERY); // 冷却中：不再发新流
+  assert.equal(llm.calls.length, 1, "流未停止的 key 冷却内不叠新流");
+  const again = s.gate.forFrame(QUERY, s.service.injectCandidates({ maxItems: 5, threshold: 3 }), "s1");
+  assert.equal(again.state, "pending", "冷却内本帧原样注入（防线故障不阻塞）");
 });
 
 test("缓存键含候选内容：updateMemory 就地修正后不吃旧判定（CodeRabbit on #382）", async () => {

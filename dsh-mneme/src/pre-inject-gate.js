@@ -24,6 +24,11 @@
 //
 // 候选映射为 m#<i> 局部序号参与判定、出参映射回真实 UUID——E13b 实测模型抄 36
 // 位 UUID 的错误率足以让整单决策作废，局部短 id 是同源解法。
+//
+// 超时与取消（CodeRabbit on #382）：判定挂起用 GenerateOptions.signal（宿主
+// llm.stream 契约自带）真取消底层流，取消发起后**有界等待流真正停止**才放行同
+// key 重试；宿主不理会 signal 时该 key 进冷却期，冷却内不再对该池发新流——宁可
+// 暂缓防线也不累积悬挂流。
 import { STR, langOf } from "./lang.js";
 
 export const GATE_TRIGGER_SOURCE = "preInjectGate";
@@ -32,6 +37,10 @@ export const GATE_OPERATION_TYPE = "pre_inject_gate";
 const JUDGE_MAX_TOKENS = 700;
 // 缓存容量与 inject.js 的 queryVectorCache 同口径（cap 8，丢最旧）。
 const VERDICT_CACHE_MAX = 8;
+// 流未停止时的 key 冷却期：冷却内不发新流（等旧的死掉/被宿主回收）。
+const COOLDOWN_MS = 60000;
+// abort 之后的宽限：等底层流停止最多这么久，超过即视为宿主不响应取消。
+const SETTLE_GRACE_MS = 2000;
 
 function extractJson(content) {
   const s = String(content ?? "").trim();
@@ -54,6 +63,8 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
 
   const verdictCache = new Map(); // cacheKey -> { flaggedIds: Set<uuid>, nPool, reason }
   const inFlight = new Map();     // cacheKey -> Promise（并行渲染去重，防调用风暴）
+  const cooldown = new Map();     // cacheKey -> 冷却截止 ms（流未停止的 key，冷却内不发新流）
+  const JUDGE_TIMEOUT = judgeTimeoutMs ?? 60000;
 
   // cacheKey = 查询 + 排序后的「id:content」：查询变、候选集变、**候选内容变**
   // （updateMemory 就地修正）都换 key——旧判定不沾新内容（CodeRabbit on #382）。
@@ -71,7 +82,7 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
   //   state: "off"      闸门未启用/不可用/空池，调用方原样
   //          "filtered"  缓存命中 + enforce：调用方按 flaggedIds 滤除
   //          "observed"  缓存命中 + observe：候选未动，分布已知（flaggedIds 带回）
-  //          "pending"   冷缓存：本帧原样渲染，判定已在后台发起
+  //          "pending"   冷缓存/冷却中：本帧原样渲染；非冷却时判定已在后台发起
   // flaggedIds 只在缓存命中时非空。豁免（pin 池/graphHint 线索行不进判定集）由
   // 调用方在传入 judgedPart 时完成——本模块只认传入的池。
   function forFrame(query, candidates, sessionId) {
@@ -87,6 +98,13 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
         nPool: cached.nPool
       };
     }
+    // 冷却中的 key：上一条流还没死，不再叠新流（宁缓防线不积资源）。
+    const until = cooldown.get(key);
+    if (until) {
+      if (Date.now() < until) return { state: "pending", flaggedIds: null, nPool: candidates.length };
+      cooldown.delete(key);
+    }
+    if (inFlight.has(key)) return { state: "pending", flaggedIds: null, nPool: candidates.length };
     prefetch(key, query, candidates, sessionId);
     return { state: "pending", flaggedIds: null, nPool: candidates.length };
   }
@@ -94,11 +112,16 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
   function prefetch(key, query, candidates, sessionId) {
     if (verdictCache.has(key) || inFlight.has(key)) return;
     const promise = judgePool(query, candidates, sessionId)
-      .then((verdict) => {
+      .then((outcome) => {
         inFlight.delete(key);
-        // 判定失败（null）不缓存：下一帧重试；成功才进缓存。
-        if (verdict) {
-          verdictCache.set(key, verdict);
+        // 流未停止（宿主不响应 abort）：该 key 进冷却，冷却内不发新流。
+        if (outcome.timedOut && !outcome.settled) {
+          cooldown.set(key, Date.now() + COOLDOWN_MS);
+          return;
+        }
+        // 判定失败（verdict=null）不缓存：下一帧重试；成功才进缓存。
+        if (outcome.verdict) {
+          verdictCache.set(key, outcome.verdict);
           if (verdictCache.size > VERDICT_CACHE_MAX) {
             verdictCache.delete(verdictCache.keys().next().value);
           }
@@ -109,7 +132,8 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
   }
 
   // 单次池级判定（E12 口径：1 次调用判整池，不逐条）。返回
-  // { flaggedIds, nPool, reason } 或 null（失败/不可解析——审计行记 degraded）。
+  // { verdict, timedOut, settled }：verdict=null 即失败/不可解析/超时（审计行记
+  // degraded）；timedOut 且 !settled = 底层流未随 abort 停止（调用方进冷却）。
   async function judgePool(query, candidates, sessionId) {
     let route = {};
     try {
@@ -129,16 +153,13 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
     let errorMessage = null;
     let inputTokens = 0;
     let outputTokens = 0;
-    // 判定超时（CodeRabbit on #382）：stream 挂起会让 inFlight 永久占住 key、
-    // 同 key 不再重试、连 degraded 审计行都没有——与本模块「超时 → degraded、
-    // 不缓存」的文档口径必须一致。消费循环用 Promise.race 兜底（宿主 llm.stream
-    // 的 signal 支持未约定，不依赖）；超时后放弃消费、按降级落账，inFlight 由
-    // prefetch 的 finally 清理，下一帧可重试。
-    const JUDGE_TIMEOUT_MS = judgeTimeoutMs ?? 60000;
-    let timeoutTimer;
-    try {
-      const consume = (async () => {
-        for await (const chunk of llm.stream({ ...route, maxTokens: JUDGE_MAX_TOKENS, messages })) {
+    let timedOut = false;
+    let settled = false;
+    // 取消协议：GenerateOptions.signal 是宿主 llm.stream 契约自带的取消通道。
+    const abort = new AbortController();
+    const consume = (async () => {
+      try {
+        for await (const chunk of llm.stream({ ...route, maxTokens: JUDGE_MAX_TOKENS, messages, signal: abort.signal })) {
           if (chunk.type === "text-delta" && typeof chunk.text === "string") text = (text ?? "") + chunk.text;
           if (chunk.type === "usage") {
             const u = chunk.usage ?? chunk;
@@ -152,19 +173,37 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
             return;
           }
         }
-      })();
-      consume.catch(() => { /* 超时后 consume 仍在跑：其拒绝已由 race 接过一次，这里防未处理拒绝 */ });
+      } finally {
+        settled = true;
+      }
+    })();
+    consume.catch(() => { /* 取消/竞态路径的拒绝已由 race 接过一次，这里防未处理拒绝 */ });
+
+    let timeoutTimer;
+    try {
       await Promise.race([
         consume,
         new Promise((_, reject) => {
-          timeoutTimer = setTimeout(() => reject(new Error(`judgment timeout (${JUDGE_TIMEOUT_MS}ms)`)), JUDGE_TIMEOUT_MS);
+          timeoutTimer = setTimeout(() => {
+            timedOut = true;
+            errorMessage = `judgment timeout (${JUDGE_TIMEOUT}ms)`;
+            abort.abort(); // 先取消底层流，再等它停下
+            reject(new Error(errorMessage));
+          }, JUDGE_TIMEOUT);
         })
       ]);
       clearTimeout(timeoutTimer);
     } catch (err) {
       clearTimeout(timeoutTimer);
-      errorMessage = String(err?.message ?? err);
+      if (!timedOut) errorMessage = String(err?.message ?? err);
       logger?.warn?.(`[dsh-mneme] preInjectGate judgment failed: ${errorMessage}`);
+    }
+    if (timedOut) {
+      // 有界等流停止：停了才允许同 key 重试（prefetch 按 settled 决定是否冷却）。
+      await Promise.race([
+        consume,
+        new Promise((r) => setTimeout(r, SETTLE_GRACE_MS))
+      ]).catch(() => {});
     }
 
     // 出参解析：m#<i> → 数组索引 → 真实 UUID。越界/重复/非本池 id 一律忽略
@@ -182,7 +221,7 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
     } else if (!errorMessage) {
       errorMessage = "unparseable judgment output";
     }
-    const degraded = flaggedIds.size === 0 && (errorMessage !== null || !parsed);
+    const degraded = errorMessage !== null || !parsed;
 
     // 审计 best-effort（CONTRIBUTING fail-safe 硬约定）：写行失败只 warn。
     // llmAudit 关闭时 usable 已为 false，这里理论不可达；防御性再判一次。
@@ -214,13 +253,14 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
       }
     }
 
-    if (degraded) return null;
-    return { flaggedIds, nPool: candidates.length, reason };
+    if (degraded) return { verdict: null, timedOut, settled };
+    return { verdict: { flaggedIds, nPool: candidates.length, reason }, timedOut, settled };
   }
 
   function clear() {
     verdictCache.clear();
     inFlight.clear();
+    cooldown.clear();
   }
 
   return { enabled: usable, enforce, cacheKey, getCached, forFrame, clear };
