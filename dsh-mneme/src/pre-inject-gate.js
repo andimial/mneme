@@ -41,7 +41,7 @@ function extractJson(content) {
   return null;
 }
 
-export function createPreInjectGate({ llm, agentDefaultModel, service, config, logger } = {}) {
+export function createPreInjectGate({ llm, agentDefaultModel, service, config, logger, judgeTimeoutMs } = {}) {
   const language = langOf(config);
   const enabled = config?.preInjectGate?.enabled === true;
   const enforce = config?.preInjectGate?.enforce === true;
@@ -55,10 +55,12 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
   const verdictCache = new Map(); // cacheKey -> { flaggedIds: Set<uuid>, nPool, reason }
   const inFlight = new Map();     // cacheKey -> Promise（并行渲染去重，防调用风暴）
 
-  // cacheKey = 查询 + 排序后的候选 id：查询变或候选集变（轮换/新记忆）都换 key，
-  // 旧判定不会沾到新池子上（防陈旧过滤）。
+  // cacheKey = 查询 + 排序后的「id:content」：查询变、候选集变、**候选内容变**
+  // （updateMemory 就地修正）都换 key——旧判定不沾新内容（CodeRabbit on #382）。
+  // 排序保证同池同 key（等价池确定性）；内容进 key 换来的是 map 占用略涨，
+  // 缓存 cap 8 有界。
   function cacheKey(query, candidates) {
-    return `${query}\u0000${candidates.map((c) => c.id).sort().join(",")}`;
+    return `${query}\u0000${candidates.map((c) => `${c.id}:${c.content}`).sort().join("\u0001")}`;
   }
 
   function getCached(key) {
@@ -127,22 +129,40 @@ export function createPreInjectGate({ llm, agentDefaultModel, service, config, l
     let errorMessage = null;
     let inputTokens = 0;
     let outputTokens = 0;
+    // 判定超时（CodeRabbit on #382）：stream 挂起会让 inFlight 永久占住 key、
+    // 同 key 不再重试、连 degraded 审计行都没有——与本模块「超时 → degraded、
+    // 不缓存」的文档口径必须一致。消费循环用 Promise.race 兜底（宿主 llm.stream
+    // 的 signal 支持未约定，不依赖）；超时后放弃消费、按降级落账，inFlight 由
+    // prefetch 的 finally 清理，下一帧可重试。
+    const JUDGE_TIMEOUT_MS = judgeTimeoutMs ?? 60000;
+    let timeoutTimer;
     try {
-      for await (const chunk of llm.stream({ ...route, maxTokens: JUDGE_MAX_TOKENS, messages })) {
-        if (chunk.type === "text-delta" && typeof chunk.text === "string") text = (text ?? "") + chunk.text;
-        if (chunk.type === "usage") {
-          const u = chunk.usage ?? chunk;
-          const i = u.input_tokens ?? u.inputTokens ?? u.prompt_tokens ?? u.promptTokens;
-          const o = u.output_tokens ?? u.outputTokens ?? u.completion_tokens ?? u.completionTokens;
-          if (Number.isFinite(i)) inputTokens = i;
-          if (Number.isFinite(o)) outputTokens = o;
+      const consume = (async () => {
+        for await (const chunk of llm.stream({ ...route, maxTokens: JUDGE_MAX_TOKENS, messages })) {
+          if (chunk.type === "text-delta" && typeof chunk.text === "string") text = (text ?? "") + chunk.text;
+          if (chunk.type === "usage") {
+            const u = chunk.usage ?? chunk;
+            const i = u.input_tokens ?? u.inputTokens ?? u.prompt_tokens ?? u.promptTokens;
+            const o = u.output_tokens ?? u.outputTokens ?? u.completion_tokens ?? u.completionTokens;
+            if (Number.isFinite(i)) inputTokens = i;
+            if (Number.isFinite(o)) outputTokens = o;
+          }
+          if (chunk.type === "finish" && (chunk.reason?.kind === "error" || chunk.reason?.kind === "aborted")) {
+            errorMessage = "llm stream aborted or errored";
+            return;
+          }
         }
-        if (chunk.type === "finish" && (chunk.reason?.kind === "error" || chunk.reason?.kind === "aborted")) {
-          errorMessage = "llm stream aborted or errored";
-          break;
-        }
-      }
+      })();
+      consume.catch(() => { /* 超时后 consume 仍在跑：其拒绝已由 race 接过一次，这里防未处理拒绝 */ });
+      await Promise.race([
+        consume,
+        new Promise((_, reject) => {
+          timeoutTimer = setTimeout(() => reject(new Error(`judgment timeout (${JUDGE_TIMEOUT_MS}ms)`)), JUDGE_TIMEOUT_MS);
+        })
+      ]);
+      clearTimeout(timeoutTimer);
     } catch (err) {
+      clearTimeout(timeoutTimer);
       errorMessage = String(err?.message ?? err);
       logger?.warn?.(`[dsh-mneme] preInjectGate judgment failed: ${errorMessage}`);
     }

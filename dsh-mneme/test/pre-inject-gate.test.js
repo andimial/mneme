@@ -29,6 +29,7 @@ function fakeLlm(script) {
       i += 1;
       calls.push({ options, messages: options.messages });
       if (step.error) throw new Error("boom: llm down");
+      if (step.hang) await new Promise(() => { /* 永不产出：超时用例 */ });
       const text = step.garbage ? "抱歉我不能输出 JSON" : JSON.stringify(step.json);
       yield { type: "text-delta", text };
       yield { type: "usage", usage: { input_tokens: 100, output_tokens: 20 } };
@@ -39,7 +40,7 @@ function fakeLlm(script) {
 
 const agentDefaultModel = { currentSelection: () => ({ provider: "test", model: "judge-1" }) };
 
-function setup(config = {}, llm = null) {
+function setup(config = {}, llm = null, gateOpts = {}) {
   const store = createStore(":memory:");
   const service = createService({ store, mirror: null, config });
   const contexts = [];
@@ -50,7 +51,7 @@ function setup(config = {}, llm = null) {
   };
   const settings = createSettings(store.db);
   const fullConfig = { maxInjectedItems: 5, importanceThreshold: 3, ...config };
-  const gate = createPreInjectGate({ llm, agentDefaultModel, service, config: fullConfig, logger: null });
+  const gate = createPreInjectGate({ llm, agentDefaultModel, service, config: fullConfig, logger: null, ...gateOpts });
   createInjector(ctx, service, settings, fullConfig, gate);
   const memoryText = contexts.find((c) => c.name === "memory").text;
   return { store, service, gate, memoryText };
@@ -68,9 +69,10 @@ const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) =
 function seedPool(service) {
   // 三条 decision（非 pinned——pin 池豁免是单独的用例）。插入序 = 注入序的
   // 一般槽次序：m#0=预算决策 / m#1=立场决策 / m#2=事实决策。
-  service.saveWithDedupe({ type: "decision", title: "预算决策", content: "The user keeps the dinner budget under $340.", importance: 3 });
-  service.saveWithDedupe({ type: "decision", title: "立场决策", content: "The user believes stand-up meetings are an essential ritual and the right way to run a team.", importance: 3 });
-  service.saveWithDedupe({ type: "decision", title: "事实决策", content: "The user works from an office in Changsha.", importance: 3 });
+  const a = service.saveWithDedupe({ type: "decision", title: "预算决策", content: "The user keeps the dinner budget under $340.", importance: 3 }).memory;
+  const b = service.saveWithDedupe({ type: "decision", title: "立场决策", content: "The user believes stand-up meetings are an essential ritual and the right way to run a team.", importance: 3 }).memory;
+  const c = service.saveWithDedupe({ type: "decision", title: "事实决策", content: "The user works from an office in Changsha.", importance: 3 }).memory;
+  return [a, b, c];
 }
 
 const QUERY = "Help me plan the menu — what's my budget figure?";
@@ -224,4 +226,38 @@ test("lightMode：预设翻转 preInjectGate.enabled 且不污染用户配置对
   assert.equal(user.preInjectGate.enabled, true, "不改到用户原对象（浅拷贝父对象）");
   const flat = applyLightModePreset({ lightMode: true, heatEnabled: true });
   assert.equal(flat.heatEnabled, false, "平铺键照旧直赋（既有行为回归）");
+});
+
+test("判定超时：degraded 审计行 + 不缓存，下一帧可重试（CodeRabbit on #382）", async () => {
+  const llm = fakeLlm([{ hang: true }, { json: { ids: [], reason: "recovered" } }]);
+  const s = setup({ preInjectGate: { enabled: true } }, llm, { judgeTimeoutMs: 50 });
+  seedPool(s.service);
+  frame(s.memoryText, QUERY);
+  // 真实等待：50ms 超时定时器要真烧完（settle 的微任务不够）
+  await new Promise((r) => setTimeout(r, 150));
+  const rows = gateRows(s.store);
+  assert.ok(rows.length >= 1);
+  assert.equal(rows[0].status, "error", "超时按降级落账");
+  assert.match(rows[0].error_message, /timeout/);
+  frame(s.memoryText, QUERY); // inFlight 已清 → 下一帧重试
+  await settle();
+  assert.equal(llm.calls.length, 2, "超时不占死 key，下一帧重新判定");
+});
+
+test("缓存键含候选内容：updateMemory 就地修正后不吃旧判定（CodeRabbit on #382）", async () => {
+  const llm = fakeLlm([
+    { json: { ids: ["m#1"], reason: "r" } },
+    { json: { ids: [], reason: "r" } }
+  ]);
+  const { service, gate, memoryText } = setup({ preInjectGate: { enabled: true } }, llm);
+  const [a, b] = seedPool(service);
+  frame(memoryText, QUERY);
+  await settle();
+  assert.equal(gate.forFrame(QUERY, service.injectCandidates({ maxItems: 5, threshold: 3 }), "s1").state, "observed");
+  // 同 id 内容被就地修正 → 旧判定不得沾新内容
+  service.update(b.id, { content: "The user now believes stand-ups are useless." });
+  frame(memoryText, QUERY);
+  await settle();
+  assert.equal(llm.calls.length, 2, "内容变化触发重新判定");
+  void a;
 });
