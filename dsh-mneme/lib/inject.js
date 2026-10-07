@@ -123,7 +123,7 @@ function extractRounds(ctx, maxRounds) {
   }
 }
 
-export function createInjector(ctx, service, settings, config) {
+export function createInjector(ctx, service, settings, config, gate = null) {
   const language = langOf(config);
   const baseMaxItems = config.maxInjectedItems ?? 5;
   const threshold = config.importanceThreshold ?? 3;
@@ -392,15 +392,26 @@ export function createInjector(ctx, service, settings, config) {
         // #249 第一批：pin 池统计走可选出参，不动 injectCandidates 的数组契约。
         const pinnedStats = {};
         const candidates = service.injectCandidates({ query, queryVector, maxItems, threshold, scope, rotate, rotateWindow: rotationTurns, pinnedStats });
+        // Issue #380：注入前判定。pin 池（#249 逐字保真）与 graphHint 线索行豁免
+        // ——判定与过滤只作用于一般记忆槽（与 write-admission 的 pinned 豁免同
+        // 口径）。渲染同步约束 → 闸门是 async prefetch + cache、同步消费：缓存
+        // 命中当帧生效（enforce 滤除 / observe 记账），冷缓存首帧降级为原样注入、
+        // 下一轮同 key 渲染生效——防线故障永不阻塞注入。
+        const pinnedShown = Math.max(0, pinnedStats.shown ?? 0);
+        const judgedPart = candidates.filter((m, i) => i >= pinnedShown && m.graphHint !== true);
+        const gateFrame = gate ? gate.forFrame(query, judgedPart, sessionId) : null;
+        const gatedCandidates = gateFrame?.state === "filtered" && gateFrame.flaggedIds
+          ? candidates.filter((m) => !gateFrame.flaggedIds.has(m.id))
+          : candidates;
         // #249：pin 条目不进轮换历史——它们每轮固定前置，记进去只会占满轮换
         // 窗口、挤掉情景候选的新鲜度（验收：pin 不参与跨轮轮换）。
-        recordInjection(sessionId, query, pinnedStats.shown > 0 ? candidates.slice(pinnedStats.shown) : candidates);
+        recordInjection(sessionId, query, pinnedShown > 0 ? gatedCandidates.slice(pinnedShown) : gatedCandidates);
         // Hot memory (v0.5.0 1.3) leads the single memory block: the agent
         // sees the short-term rounds first, then the cross-session recall —
         // the documented injection order 1→2. Folding it here (instead of a
         // separate context) keeps the prompt assembly stable at two blocks.
         const hotText = renderHotContext(ctx);
-        const body = render(candidates, pinnedStats);
+        const body = render(gatedCandidates, pinnedStats);
         // #333（issue #34 恢复）：时间前缀只在会话首轮出现（per-session 闩锁），
         // 排在整个记忆块的最前——模型先知道「今天几号」，再看热上下文与长期记忆。
         const timePrefix = renderTimePrefix(ctx);
@@ -419,8 +430,11 @@ export function createInjector(ctx, service, settings, config) {
           adaptive: config.injectUncertaintyAdaptive === true,
           scoped: scope && (scope.agent_scope || scope.workspace_scope) ? scope : null,
           rotated: rotate ? rotate.size : 0,
+          // Issue #380：闸门状态进快照（off/pending/observed/filtered），面板
+          // 「注入预览」卡据此展示判定是否生效与标记数。
+          gate: gateFrame ? { state: gateFrame.state, nFlagged: gateFrame.flaggedIds ? gateFrame.flaggedIds.size : null, judged: judgedPart.length } : null,
           hotChars: hotText.length,
-          entries: candidates.map((m) => ({
+          entries: gatedCandidates.map((m) => ({
             id: m.id,
             type: m.type,
             title: m.title,

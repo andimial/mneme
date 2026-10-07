@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 🆕 新增
+
+- **注入前判定 `preInjectGate`（issue #380，E12 D1 裁决落地，opt-in 默认关）**：每帧注入候选出池后、进入 system prompt 前，一次**池级** LLM 调用判出「会向本次请求注入意见/立场」的记忆（判定协议与 E12 实验 protocol-preinject.txt 同源；E12 实测判定+过滤把谄媚率 26.9%→2.5%，且 MemGauge 三阶段考卷实测写入/巩固/检索预算三面对内容毒均无防线——这是唯一过预注册判据的机制）。两级语义复用 #254 writeAdmission：`enabled` 观察档（判定完成落 `llm_audit_logs`，真实 token 用量 + 被标记记忆 id，先看真实负载的意见占比分布）、`enforce` 缓存命中帧真滤除（E12：判定+标记比过滤差 +17.6pp，判定结果**绝不进模型上下文**）。宿主注入渲染是同步回调 → 判定走 async prefetch + cache 同步消费（queryVectorCache 同款），冷缓存首帧降级为原样注入、下一轮同 key 渲染生效；判定失败原样注入 + `degraded` 审计行，防线故障永不阻塞注入。pin 池（#249 逐字保真）与 graphHint 线索行豁免；候选映射 `m#<i>` 局部序号（E13b 实测 UUID 回显脆弱）；缓存键 = 查询 + 候选 id 集（轮换/新记忆即重判）；`llmAudit` 关闭时本闸不运行；lightMode 强制关（`applyLightModePreset` 支持点分键）。白名单 + 计数锁 +2 + 文档（CONFIGURATION.md 新节）。
+
 ## ⚠️ 行为变更
 
 - **`dreamMergeGuard` 默认值 `false` → `true`（issue #339 / E8）**：巩固 merge 护栏自 v0.8.13 引入时是 opt-in 默认关，现改为默认开——合并对象命中长保留类型（与 archive 护栏同表：preference/pattern/rejected_solution/constraint/pitfall）的 merge 决策整条跳过，`dreamSkipInvalid`（默认开）下被跳条目进 `dream_runs.skipped`、run 记 degraded。依据是它引入时就已写明的机制：archive 护栏只挡 archive 不挡 merge，而 merge 的「更精炼摘要」恰是约束失真的主通道——E8 实测巩固损耗里 10/26 条被丢约束已归位 guarded 类型仍被 merge 吃掉；同类压缩管线的实测也显示安全规则被同速压缩后一轮只剩 53%、五轮只剩 10%，且全程无报错信号。需要旧行为的库显式设 `dreamMergeGuard: false`（面板可关）。

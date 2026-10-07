@@ -653,6 +653,27 @@ export const Config = z.object({
     enforce: z.boolean().default(false)
   }).default({}),
 
+  // --- issue #380: pre-inject gate (opinion/stance judgment before injection) -
+  // 注入前判定：每帧注入候选出池后、进入 system prompt 前，一次池级 LLM 调用判出
+  // 「会向本次请求注入意见/立场」的记忆（E12 D1 口径，判定协议同源实验
+  // protocol-preinject.txt）。两级语义复用 writeAdmission：
+  //   enabled — 跑判定。判定 async prefetch + cache、同步消费（宿主 systemPrompt
+  //     渲染是同步回调，冷缓存首帧降级为不判定原样注入，下一轮同 key 生效）；
+  //     判定完成落 llm_audit_logs（trigger_source=preInjectGate，真实 token 用量，
+  //     related_memory_ids=被标记记忆）——先在真实负载看意见占比分布。
+  //   enforce — 缓存命中帧真的滤除被标记候选。E12 实测只有过滤过判据（D1 −24.4pp，
+  //     判定+标记 D2 比它差 +17.6pp——给模型看标记的线已被 E2/E3 关闭，本闸判定
+  //     结果绝不进模型上下文）。enforce 无 enabled 时无效果。
+  // 降级路径：判定失败/超时/不可解析 → 本帧原样注入 + 审计行 degraded=true 且不
+  // 缓存——防线故障永不阻塞注入。判定 LLM 走 agentDefaultModel 当前选择（entity
+  // adapter 同款装配），不设独立 provider/model 键；llmAudit.enabled=false 时本闸
+  // 不运行（无账目的判定不可见也不该花钱）。lightMode 强制关（LLM-per-turn 附加
+  // 路径与低资源档互斥）。
+  preInjectGate: z.object({
+    enabled: z.boolean().default(false),
+    enforce: z.boolean().default(false)
+  }).default({}),
+
   // --- #164 A2: secret / PII scan at the write boundary ----------------------
   // 写入边界的密钥 / PII 判据（src/sensitive-scan.js）自身的闸。与 writeAdmission
   // 的 enabled 分开是有意的：那一个管 #254 第 1 级的空白 / 噪声判据，本键管 A2 这
@@ -792,6 +813,10 @@ const LIGHT_MODE_OFF = [
   "documentMemoryEnabled",
   // 轻量模式不开热计算（heat 属于重型增强；关掉后 sleep 降级也退回纯时间分层）。
   "heatEnabled",
+  // 轻量模式不开注入前判定（#380：LLM-per-turn 附加路径，每帧注入多一次池级
+  // 判定调用——与低资源档互斥；预设给的默认值，用户显式勾选仍然赢）。点分键
+  // 由 applyLightModePreset 的嵌套赋值分支处理。
+  "preInjectGate.enabled",
   // #249 N3：轻量档默认不开压缩边缘双落点——它往对话里追加消息（新的注入表面），
   // 轻量档（小模型 / 小上下文）最不该再多一份注入物。这是预设给的默认值、不是强制：
   // 用户显式勾选仍然赢（合并顺序「用户开关 > 轻量预设 > bundle 配置」，同
@@ -808,7 +833,17 @@ const LIGHT_MODE_OFF = [
 export function applyLightModePreset(cfg) {
   if (cfg?.lightMode !== true) return cfg;
   const preset = { ...cfg, lightMode: true };
-  for (const key of LIGHT_MODE_OFF) preset[key] = false;
+  for (const key of LIGHT_MODE_OFF) {
+    // 点分键（#380 preInjectGate.enabled）：对象子键的预设翻转——浅拷贝父对象后
+    // 改子键，避免直接改到用户 config 里的同一引用。平铺键照旧直赋。
+    const dot = key.indexOf(".");
+    if (dot < 0) {
+      preset[key] = false;
+      continue;
+    }
+    const parent = key.slice(0, dot);
+    preset[parent] = { ...(preset[parent] ?? {}), [key.slice(dot + 1)]: false };
+  }
   return preset;
 }
 
