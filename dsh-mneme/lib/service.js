@@ -1525,8 +1525,13 @@ export function createService({ store, mirror, config, onWrite, logger, document
    * 取满独立预算、再从候选里摘除（于是轮换重排碰不到它们），由调用方前置到块
    * 头。`pinnedStats` 是可选出参：回报实际 pin 条数与超预算未展示条数，不改变
    * 本函数「返回数组」的既有契约。预算为 0 时整段不执行，行为逐字节不变。
+   *
+   * Issue #380（preInjectGate）：可选的 `gate` 在这里消费——判定与滤除必须发生在
+   * `touchRecalled` **之前**（与 strictScope 同纪律，见 :419-422 的注释：闸门放
+   * 在记账之后，出局的条目照样吃了曝光）。`gateStats` 是可选出参，回报本帧的闸门
+   * 状态给调用方做面板快照；`gate` 缺席（检索侧/独立服务调用）时逐字节等于改前。
    */
-  function injectCandidates({ query = "", maxItems = 5, threshold = 3, queryVector, scope = null, rotate = null, rotateWindow = 0, pinnedStats = null } = {}) {
+  function injectCandidates({ query = "", maxItems = 5, threshold = 3, queryVector, scope = null, rotate = null, rotateWindow = 0, pinnedStats = null, gate = null, gateStats = null } = {}) {
     const q = String(query ?? "").trim();
     // codingRetrospect 读取侧门控：编码记忆（rejected_solution / pitfall /
     // constraint）只在编码任务时注入，防噪声污染其他业务；编码任务时按
@@ -1793,12 +1798,30 @@ export function createService({ store, mirror, config, onWrite, logger, document
       pinnedStats.shown = pinned.length;
       pinnedStats.suppressed = eligible.filter((m) => !shownIds.has(m.id)).length;
     }
-    touchRecalled(selected);
+    // Issue #380：注入前判定（preInjectGate）在这里消费——**必须在 touchRecalled
+    // 之前**，与 strictScope 同纪律（见本文件 :419-422 的注释：闸门放在记账之后，
+    // 出局的条目照样吃了曝光）。滤除若留给调用方（inject.js）做，被标记的记忆仍会
+    // 刷温时钟（heat + injectHeat 时进排序权重）并落 mode='inject' 曝光账，反馈环
+    // 会把闸门想压下的意见记忆重新顶上来。判定与过滤只作用于一般记忆槽：pin 池
+    // （#249 逐字保真）与 graphHint 线索行豁免（豁免在下面 judgedPart 的切片里）。
+    // 帧状态经 gateStats 出参回给调用方做面板快照（同 pinnedStats 口径，不动
+    // 「返回数组」契约）；gate 缺席（检索侧/独立服务调用）= 逐字节等于改前。
+    let injected = selected;
+    if (gate) {
+      const judgedPart = selected.filter((m, i) => i >= pinned.length && m.graphHint !== true);
+      const gateFrame = gate.forFrame(query, judgedPart);
+      if (gateFrame?.state === "filtered" && gateFrame.flaggedIds) {
+        injected = selected.filter((m) => !gateFrame.flaggedIds.has(m.id));
+      }
+      if (gateStats) gateStats.frame = { ...gateFrame, judged: judgedPart.length };
+    }
+    touchRecalled(injected);
     // #217 口径（2026-09-19 拍板）：注入是曝光型访问事件，与检索命中同表分账
     // （mode='inject'，candidates 存实际注入集）。跟随 recallRecordDefault——
     // 与检索侧同门，不设新配置键；heat 关闭时照写，留痕与消费解耦（两 issue
-    // 独立验收）。空选不记（没有访问发生）；记账失败不影响注入本身。
-    if ((config?.recallRecordDefault ?? true) && recallRecorder && selected.length > 0) {
+    // 独立验收）。空选不记（没有访问发生）；记账失败不影响注入本身。**实际注入集**
+    // = 闸门滤除之后的集合（#380 评审：被滤掉的记忆没有曝光，不能记成已注入）。
+    if ((config?.recallRecordDefault ?? true) && recallRecorder && injected.length > 0) {
       try {
         recallRecorder({
           // recall_runs.query 是 NOT NULL（store.js:61）：注入是主动曝光、
@@ -1807,7 +1830,7 @@ export function createService({ store, mirror, config, onWrite, logger, document
           mode: "inject",
           topK: maxItems,
           threshold: null,
-          candidates: selected.map((m) => ({
+          candidates: injected.map((m) => ({
             id: m.id,
             title: m.title,
             content: m.content,
@@ -1818,7 +1841,7 @@ export function createService({ store, mirror, config, onWrite, logger, document
         });
       } catch { /* recall receipt is best effort */ }
     }
-    return selected;
+    return injected;
   }
 
   /**
