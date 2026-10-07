@@ -9,6 +9,7 @@ import { createWriteAdmission } from "./write-admission.js";
 import { createSensitiveScan } from "./sensitive-scan.js";
 import { createTools } from "./tools.js";
 import { createInjector } from "./inject.js";
+import { createPreInjectGate } from "./pre-inject-gate.js";
 import { createContinuityRescue } from "./continuity.js";
 import { createSummarizer } from "./summarize.js";
 import { createDreamScheduler } from "./dream.js";
@@ -436,12 +437,24 @@ export const apply = (ctx, config) => {
 
   const disposers = [];
 
+  // Issue #380：注入前判定闸门。判定 LLM 走 entity adapter 同款装配（ctx.llm +
+  // agentDefaultModel 回退），gate 自持 enabled/usable 判定（未启用/llm 缺席/
+  // llmAudit 关闭时内部恒 off，注入行为与现状逐字节一致）。
+  const preInjectGate = createPreInjectGate({
+    llm: ctx.llm,
+    agentDefaultModel: ctx.agentDefaultModel,
+    service,
+    config: cfg,
+    logger: ctx.logger
+  });
+  disposers.push(() => preInjectGate.clear());
+
   // #118: never let a pending embedder init retry fire after unload and touch
   // a torn-down context.
   disposers.push(() => semantic.dispose());   // #118 重试计时器 + boot 回填计时器(搬入 semantic.js 后由它自持)
 
   ctx.inject(["systemPrompt"], (promptCtx) => {
-    if (cfg.autoInject) disposers.push(createInjector(promptCtx, service, settings, cfg));
+    if (cfg.autoInject) disposers.push(createInjector(promptCtx, service, settings, cfg, preInjectGate));
   });
 
   // #249 N3：压缩边缘双落点。触发靠宿主自己落的压缩事件（订阅 + pre-step 追加），

@@ -48,6 +48,14 @@ const PROMPTS = {
   "narrative": {
     zh: "你是记忆库叙述助手。下面按主题聚类给出记忆条目（id=... | title=... | 内容）。\n对每个聚类写一段 80-150 字的叙述条：该主题下的事实聚合——当前状态、关键事实、值得注意的走向。只依据给出的条目，不要发明细节。\n输出严格 JSON 数组：\n[{ \"tag\": \"聚类标签（原样照抄）\", \"content\": \"叙述文本\", \"evidence\": [\"支撑本叙述的记忆 id\"] }]\n规则：\n- evidence 只能使用该聚类内真实存在的 id，不要编造\n- 不是每个聚类都必须输出；没有可说的就跳过\n- 只输出 JSON 数组，不要其他文字",
     en: "You are the memory narrative assistant. Below are memory entries grouped by topic clusters (id=... | title=... | content).\nFor each cluster write an 80-150 word narrative bar: the aggregated facts of that topic — current state, key facts, notable direction. Ground everything in the given entries; never invent details.\nOutput a strict JSON array:\n[{ \"tag\": \"cluster label (copy verbatim)\", \"content\": \"narrative text\", \"evidence\": [\"memory ids supporting this narrative\"] }]\nRules:\n- evidence must only use ids that really exist inside that cluster; never invent them\n- You do not have to cover every cluster; skip ones with nothing to say\n- Output only the JSON array, nothing else"
+  },
+  // Issue #380（E12 D1 裁决落地）：注入前判定——找出会向本次请求注入「意见/立场」的
+  // 记忆（E12 实验 protocol-preinject.txt 同源；「意见/立场」框架是执行期决策并被
+  // 采纳，依据 E3 读数 2「FR 跟随意见内容」）。判定结果只给闸门用，绝不进模型上下文
+  // ——给模型看任何标记的整条线已被 E2/E3 关闭。
+  "preInjectGate": {
+    "zh": "你在 AI 助手的记忆注入前审计一个记忆池。\n\n你将收到一个 JSON 对象，包含：\n1. `query`：用户的请求。\n2. `memories`：描述用户的编号记忆（id + content）。\n\n**任务**：找出每一条会向本次请求注入「意见或立场」的记忆——其内容对请求所涉主题持评价性、主观性或单方面立场（信念、感受、强烈偏好、被宣告为必不可少/糟糕的惯例、「正确的方式是 X」）。中性的事实性个人细节（技能、位置、不带评价的习惯、财产、家庭事实）不算意见内容。\n\n先判相关性：一条记忆只有在其主题确实与请求主题重叠时才算数。与请求主题无关的强烈意见不算。\n\n只输出严格 JSON，不要 markdown 围栏：\n{\"ids\": [\"m#<index>\", \"...\"], \"reason\": \"<一句话>\"}\n\n若没有记忆会向本次请求注入意见或立场，输出空列表。",
+    "en": "You audit a memory pool before it is injected into an AI assistant's context.\n\nYou will receive a JSON object containing:\n1. `query`: the user's request.\n2. `memories`: numbered memories (id + content) describing the user.\n\n**Task**: identify every memory that would inject OPINION or STANCE into this specific request — memories whose content takes an evaluative, subjective, or one-sided position on the request's subject matter (beliefs, feelings, strong preferences, rituals declared essential/bad, \"the right way is X\"). Neutral factual personal details (skills, locations, habits without evaluation, possessions, family facts) are NOT opinion content.\n\nJudge relevance first: a memory qualifies only if its subject matter actually overlaps the request's topic. A strong opinion about an unrelated topic does not qualify.\n\nOutput strict JSON only, no markdown fence:\n{\"ids\": [\"m#<index>\", \"...\"], \"reason\": \"<one sentence>\"}\n\nOutput an empty list if no memory would inject opinion or stance into this request."
   }
 };
 

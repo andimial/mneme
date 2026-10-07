@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@modusensus/dsh-mneme?color=blue&label=npm)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![tests](https://img.shields.io/badge/tests-1561%20passed-success)](https://github.com/slow-stack/mneme)
+[![tests](https://img.shields.io/badge/tests-1582%20passed-success)](https://github.com/slow-stack/mneme)
 [![CI](https://img.shields.io/github/actions/workflow/status/slow-stack/mneme/ci.yml)](https://github.com/slow-stack/mneme/actions)
 [![node](https://img.shields.io/badge/node-22%2B-blue)](https://nodejs.org)
 [![npm downloads](https://img.shields.io/npm/d18m/@modusensus/dsh-mneme.svg?color=blue&label=downloads)](https://www.npmjs.com/package/@modusensus/dsh-mneme)
@@ -433,6 +433,7 @@ dsh web
 | `scopeEnabled` | `false` | 作用域隔离总开关（v0.8.0，issue #17）：memory_save 按会话身份写入 agent / workspace 标注（agentPreset / 工作区路径，registry 反查取不到回退 header.cwd，再取不到 NULL）；去重键扩展含作用域三元——跨作用域同标题不再物理合并；检索与注入排序按当前会话作用域加权（命中 ×1.25、他 scope ×0.5 保留可见，issue #339 补齐注入通道）。也走 feature_flags 白名单（面板可启停） |
 | `strictScope` | `false` | 作用域硬过滤（v0.8.0 引入，v0.8.1 起只认显式声明；依赖 `scopeEnabled`）：检索 / 注入 / 列表 / 单取四路过滤，**显式声明**收窄到他者作用域的记忆完全不可见；载体自动标注只降权保留可见——真正的物理隔离请用 sensitivity。会话身份解析不到时 fail-closed 只挡显式行。关闭时全部为软隔离（降权保留可见）。也走 feature_flags 白名单 |
 | `writeAdmission` | `{enabled:false, enforce:false}` | 写入准入（issue #254，默认关）：把「这条该不该进库」前移到 LLM 之前。第 1 级是零 LLM 的确定性判据——空白 / 纯噪声 + 密钥 / PII（判据来源是 #164 A2，经 `sensitiveScan` 注入，本批只定义接口）。`enabled` 跑判据并落审计行（`llm_audit_logs` 的 `metadata.deny`），`enforce` 才真的拒（`store.save` 之前返回，`memory_save` 返回 `action:"denied"` + `reason`）；只开 `enabled` = 仅告警、写入不拦。去重键命中不进第 1 级（归 write-update 放行），G1/G2 阈值只计量。也走 feature_flags 白名单 |
+| `preInjectGate` | `{enabled:false, enforce:false}` | 注入前判定（issue #380，默认关）：每帧注入候选出池后、进入 system prompt 前，一次池级 LLM 调用判出「会向本次请求注入意见/立场」的记忆（判定协议与 E12 实验同源；实测过滤把谄媚 26.9%→2.5%，且判定结果绝不进模型上下文——给模型看标记的线已被 E2/E3 关闭）。`enabled` 跑判定并落审计行（真实 token 用量 + 被标记记忆 id），`enforce` 才在缓存命中帧真滤除；冷缓存首帧降级为原样注入（宿主注入渲染是同步回调，判定走 prefetch+cache）。pin 池与检索线索行豁免；判定失败原样注入不阻塞；整池被标记时放弃本次滤除（fail-open）；判定连续失败 3 次熔断一个冷却期；无默认路由时审计行 `model_id` 落 `unknown` 占位；`llmAudit` 关闭时本闸不运行；lightMode 强制关。也走 feature_flags 白名单 |
 | `conflictFreezeEnabled` | `false` | 冲突冻结（v0.4.4）：dream 发现矛盾对不自动裁决，冻结进冲突队列；状态页「冲突队列」支持并排对比与人工确认（保留 A / 保留 B / 仅标记已处理，v0.8.0） |
 | `conflictFreezeMaxPending` | `100` | 冲突冻结队列最大挂起数（1-1000）：超出后不再入队（防队列无限膨胀） |
 | `escapePromptVariables` | `true` | 注入文本花括号转义（v0.8.0 恢复，issue #162）：注入边界把 `{{...}}` 转义，防止 hot memory / 记忆原文里的 Go template / Vue 语法触发宿主 interpolate 抛错卡死会话（v0.7.4 曾修复、v0.7.11 误删） |
@@ -612,7 +613,7 @@ src/
 ├── api.js            # HTTP 路由（Web 面板数据通道，含 /conflicts 冲突队列）
 └── index.js          # 插件接线
 lib/                  # src 的同步分发产物（npm run sync；发布前由 root prepack 的 check-sync.js 校验一致性；唯一手写例外 lib/client.js——Web 面板 bundle，sync 不覆盖）
-test/                 # 1561 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
+test/                 # 1582 个 node:test 测试（审计与三轴线压测不变量；src↔lib 一致性由 scripts/check-sync.js 发布闸门校验）
 scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压测 · sync-lib.js 同步 · check-sync.js 发布闸门 · benchmark-recall.js / benchmark-embed.js / benchmark-rerank.js 基准 · sync-test-badge.mjs 测试徽章 · build-runtime-manifest.mjs 运行时清单
 ```
 
@@ -621,7 +622,7 @@ scripts/              # e2e-dsh.js 端到端演示 · stress-dsh.js 三轴线压
 ```bash
 cd dsh-mneme
 npm install        # 安装 peer 依赖（以 devDependencies 形式，用于本地测试）
-npm test           # 运行 1561 个测试
+npm test           # 运行 1582 个测试
 npm run stress     # 三轴线压测：长会话检索 / 冲突仲裁 / 多 Agent 并发（离线 mock LLM）
 npm run sync       # 把 src/ 同步到 lib/（发布时由 prepack 钩子自动执行）
 ```

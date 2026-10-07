@@ -127,6 +127,11 @@ const FEATURE_FLAG_BOOLEANS = [
   // writeAdmission 对象。
   "writeAdmission.enabled",
   "writeAdmission.enforce",
+  // Issue #380：注入前判定（preInjectGate）。两级语义同 writeAdmission——
+  // enabled 跑判定（观察档）、enforce 缓存命中帧真滤除；都默认关。点号键平铺存、
+  // 合并时展开回 preInjectGate 对象。
+  "preInjectGate.enabled",
+  "preInjectGate.enforce",
   // Issue #164 A2：写入边界的密钥 / PII 判据（src/sensitive-scan.js）。与上面两个
   // 键分层——本键决定「这类判据参不参与」（默认关），命中之后是仅告警还是真拦仍由
   // writeAdmission.enforce 决定（#164 口径：默认仅告警、拦截 opt-in）。

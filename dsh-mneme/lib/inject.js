@@ -123,7 +123,7 @@ function extractRounds(ctx, maxRounds) {
   }
 }
 
-export function createInjector(ctx, service, settings, config) {
+export function createInjector(ctx, service, settings, config, gate = null) {
   const language = langOf(config);
   const baseMaxItems = config.maxInjectedItems ?? 5;
   const threshold = config.importanceThreshold ?? 3;
@@ -391,10 +391,21 @@ export function createInjector(ctx, service, settings, config) {
           : baseMaxItems;
         // #249 第一批：pin 池统计走可选出参，不动 injectCandidates 的数组契约。
         const pinnedStats = {};
-        const candidates = service.injectCandidates({ query, queryVector, maxItems, threshold, scope, rotate, rotateWindow: rotationTurns, pinnedStats });
+        // Issue #380：注入前判定（preInjectGate）由 injectCandidates **内部**消费——
+        // 判定与滤除必须发生在它的 touchRecalled / recall 记账之前（#380 评审：与
+        // strictScope 同纪律，见 service.js 的「闸门还必须在 touchRecalled 之前」）。
+        // pin 池（#249 逐字保真）与 graphHint 线索行豁免由 service 侧按同口径切出。
+        // 渲染同步约束 → 闸门是 async prefetch + cache、同步消费：缓存命中当帧生效
+        // （enforce 滤除 / observe 记账），冷缓存首帧降级为原样注入、下一轮同 key
+        // 渲染生效——防线故障永不阻塞注入。帧状态经 gateStats 出参带回（同 pinnedStats
+        // 的出参口径），这里只读它做面板快照。
+        const gateStats = {};
+        const candidates = service.injectCandidates({ query, queryVector, maxItems, threshold, scope, rotate, rotateWindow: rotationTurns, pinnedStats, gate, gateStats });
+        const pinnedShown = Math.max(0, pinnedStats.shown ?? 0);
+        const gateFrame = gateStats.frame ?? null;
         // #249：pin 条目不进轮换历史——它们每轮固定前置，记进去只会占满轮换
         // 窗口、挤掉情景候选的新鲜度（验收：pin 不参与跨轮轮换）。
-        recordInjection(sessionId, query, pinnedStats.shown > 0 ? candidates.slice(pinnedStats.shown) : candidates);
+        recordInjection(sessionId, query, pinnedShown > 0 ? candidates.slice(pinnedShown) : candidates);
         // Hot memory (v0.5.0 1.3) leads the single memory block: the agent
         // sees the short-term rounds first, then the cross-session recall —
         // the documented injection order 1→2. Folding it here (instead of a
@@ -419,6 +430,9 @@ export function createInjector(ctx, service, settings, config) {
           adaptive: config.injectUncertaintyAdaptive === true,
           scoped: scope && (scope.agent_scope || scope.workspace_scope) ? scope : null,
           rotated: rotate ? rotate.size : 0,
+          // Issue #380：闸门状态进快照（off/pending/observed/filtered），面板
+          // 「注入预览」卡据此展示判定是否生效与标记数。
+          gate: gateFrame ? { state: gateFrame.state, nFlagged: gateFrame.flaggedIds ? gateFrame.flaggedIds.size : null, judged: gateFrame.judged ?? null } : null,
           hotChars: hotText.length,
           entries: candidates.map((m) => ({
             id: m.id,

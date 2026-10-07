@@ -46,6 +46,17 @@
 
 第 1 级的判据面刻意收窄：**去重键命中不进第 1 级**（归 write-update 放行——同步近重复门跑在异步矛盾检测之前会把本该被裁决的矛盾直接拒掉），G1/G2 阈值也只是计量。两个键都走 feature_flags 白名单（面板可启停）。
 
+## 注入前判定（#380）
+
+每帧注入候选出池后、进入 system prompt 前，一次**池级** LLM 调用判出「会向本次请求注入意见/立场」的记忆（判定协议与 E12 实验同源；实验依据：D1 判定+过滤把谄媚率 26.9%→2.5%，判定+标记比过滤差 +17.6pp——判定结果**只给闸门用，绝不进模型上下文**）。两级语义与 writeAdmission 同构，落点在注入面而非写入面。
+
+| 键 | 默认 | 作用 | 开启后果 / 冲突 |
+|---|---|---|---|
+| `preInjectGate.enabled` | `false` | 跑池级判定。判定 async prefetch + cache、渲染帧同步消费（宿主 systemPrompt 渲染是同步回调） | 关 = 注入行为与现状逐字节一致。**冷缓存首帧降级**：新查询的第一帧原样注入，下一轮同 key 渲染生效；判定完成落 `llm_audit_logs`（`trigger_source=preInjectGate`，真实 token 用量，`related_memory_ids`=被标记记忆）——先观察真实负载的意见占比分布 |
+| `preInjectGate.enforce` | `false` | 缓存命中帧真的滤除被标记候选 | 关 = 仅观察：候选集不动。**enforce 无 enabled 时无效果**。pin 池（constraint/preference，#249 逐字保真）与 graphHint 线索行豁免——判定与过滤只作用于一般记忆槽 |
+
+降级路径：判定失败/超时/不可解析 → 本帧原样注入 + 审计行 `degraded:true` 且不缓存（下一帧重试）——防线故障永不阻塞注入；连续失败 3 次熔断一个冷却期（判定器系统性坏掉时不再逐帧花钱，到期自动恢复）。**整池被标记**时放弃本帧 enforce（fail-open）：记忆正文是判定模型的可影响输入，一条指令型记忆不该让整个记忆块静默失明——该形态在审计行里就是 `n_flagged == n_pool`（判定与审计按原样保留，只有滤除让位）。判定 LLM 走 `agentDefaultModel` 当前选择（entity adapter 同款装配，无独立 provider/model 键；审计行带实际模型与用量，无默认模型路由时 `model_id` 落 `unknown` 占位——判定生效就必有账；成本痛了再加覆盖键）。缓存键 = 查询 + 候选 `id:内容` 集，候选集变化（轮换/新记忆）或候选内容被就地修正（`updateMemory`）即重新判定，不吃旧判定；命中刷新序（LRU，容量 8）。`llmAudit.enabled=false` 时本闸不运行（无账目的判定不可见也不该花钱）。lightMode 强制关（LLM-per-turn 附加路径与低资源档互斥）。
+
 ## 蒸馏（会话 → 记忆）
 
 | 键 | 默认 | 作用 | 开启后果 / 冲突 |
@@ -245,7 +256,8 @@
 `entityExtractionEnabled` · `autoDream` · `sleepModeEnabled` · `rerankEnabled` ·
 `autoReindexOnBoot` · `hybridInject` · `injectGuidanceEnabled` · `searchSemanticDedup` ·
 `selectiveInjectEnabled` · `bm25SearchEnabled` · `entityRecallEnabled` ·
-`dreamNarrativeEnabled` · `documentMemoryEnabled` · `heatEnabled` · `continuityRescueEnabled`
+`dreamNarrativeEnabled` · `documentMemoryEnabled` · `heatEnabled` · `continuityRescueEnabled` ·
+`preInjectGate.enabled`（#380）
 
 预设只是默认值而非强制：用户显式写进 feature_flags 的值在装配顺序上后展开、仍然生效
 （「用户开关 > 轻量预设 > bundle 配置」）。
