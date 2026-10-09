@@ -412,6 +412,12 @@ window.__ModuleLoader__.load({
         "memory.settings.serve.copy": "复制",
         "memory.settings.serve.copied": "已复制",
         "memory.settings.serve.hint": "与「外部访问 API」同源：同一套路由与鉴权，指向同一记忆库目录时，调用方应使用面板这张令牌（通常有效，非承诺）。两者默认抢同一端口，二选一或用 --port 错开。",
+        "memory.settings.mcp.title": "MCP 服务 dsh-mneme-mcp",
+        "memory.settings.mcp.desc": "stdio MCP 服务器：任何 MCP 客户端（Claude Code / Cursor 等）挂载后，即可获得与 DSH 内一致的记忆工具六件套。",
+        "memory.settings.mcp.snippet": "{ \"mcpServers\": { \"dsh-mneme\": { \"command\": \"dsh-mneme-mcp\", \"env\": { \"DSH_MNEME_TOKEN\": \"<外部访问 API 的 token>\" } } } }",
+        "memory.settings.mcp.copy": "复制",
+        "memory.settings.mcp.copied": "已复制",
+        "memory.settings.mcp.hint": "数据面走「外部访问 API」（默认 127.0.0.1:8790，Bearer），token 就是上面那张；可用 DSH_MNEME_URL / DSH_MNEME_TOKEN 环境变量或 ~/.dsh-mneme/cli.json 覆盖。command 需在 PATH 上（随 @modusensus/dsh-mneme 安装自带）。",
         "memory.settings.extapi.savedHint": "已保存，重启 DSH 后生效",
         "memory.settings.extapi.invalidPort": "端口需为 1-65535 的数字",
         "memory.tab.rejected_solution": "被否决方案",
@@ -873,6 +879,12 @@ window.__ModuleLoader__.load({
         "memory.settings.serve.copy": "Copy",
         "memory.settings.serve.copied": "Copied",
         "memory.settings.serve.hint": "Shares routes and auth with the external API: when pointing at the same memory directory, callers should use the panel's token (expected to work, not guaranteed). Both default to the same port — enable one or offset with --port.",
+        "memory.settings.mcp.title": "MCP server: dsh-mneme-mcp",
+        "memory.settings.mcp.desc": "stdio MCP server: any MCP client (Claude Code, Cursor, …) mounting it gets the same six memory tools as inside DSH.",
+        "memory.settings.mcp.snippet": "{ \"mcpServers\": { \"dsh-mneme\": { \"command\": \"dsh-mneme-mcp\", \"env\": { \"DSH_MNEME_TOKEN\": \"<token from External API above>\" } } } }",
+        "memory.settings.mcp.copy": "Copy",
+        "memory.settings.mcp.copied": "Copied",
+        "memory.settings.mcp.hint": "Data plane is the external API (default 127.0.0.1:8790, Bearer) — the token is the one above; override with DSH_MNEME_URL / DSH_MNEME_TOKEN env vars or ~/.dsh-mneme/cli.json. The command must be on PATH (installed with @modusensus/dsh-mneme).",
         "memory.settings.extapi.savedHint": "Saved. Takes effect after restarting DSH",
         "memory.settings.extapi.invalidPort": "Port must be a number between 1 and 65535",
         "memory.tab.rejected_solution": "Rejected solutions",
@@ -2877,6 +2889,14 @@ window.__ModuleLoader__.load({
         );
       }
 
+      const [mcpCopied, setMcpCopied] = useState(false);
+      function copyMcpSnippet() {
+        navigator.clipboard?.writeText(t("memory.settings.mcp.snippet")).then(
+          () => { setMcpCopied(true); announce(t("memory.settings.mcp.copied")); setTimeout(() => setMcpCopied(false), 1500); },
+          () => {}
+        );
+      }
+
       return h("div", null,
         // 版本自检横幅 — 仅 outdated 时渲染（up-to-date/ahead/unknown/失败
         // 全部零渲染）。钉子警示：安装时指定过版本号的 profile 会被 pnpm
@@ -3097,6 +3117,22 @@ window.__ModuleLoader__.load({
             serveCopied && h("span", { className: "mneme-saved" }, t("memory.settings.serve.copied"))
           ),
           h("div", { className: "mneme-set-hint", style: { marginTop: 10 } }, t("memory.settings.serve.hint"))
+        ),
+        // MCP 接入卡（issue #386 第 2 条）：与独立服务同款只读模式——片段 +
+        // 复制，不做连通性探测（token 有效性与端点可达由 MCP 客户端侧报错）。
+        h("section", { className: "mneme-set-card" },
+          h("div", { className: "mneme-set-title" }, t("memory.settings.mcp.title")),
+          h("div", { className: "mneme-set-desc" }, t("memory.settings.mcp.desc")),
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            h("code", {
+              className: "mneme-set-token",
+              style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }
+            }, t("memory.settings.mcp.snippet")),
+            h("button", { className: "mneme-btn", onClick: copyMcpSnippet },
+              t("memory.settings.mcp.copy")),
+            mcpCopied && h("span", { className: "mneme-saved" }, t("memory.settings.mcp.copied"))
+          ),
+          h("div", { className: "mneme-set-hint", style: { marginTop: 10 } }, t("memory.settings.mcp.hint"))
         ),
         // 向量搜索卡片已上移到「搜索」分组（与功能开关里的语义检索路线相邻），
         // 这里不再重复渲染。
