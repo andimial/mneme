@@ -3,7 +3,7 @@
   "name": "io.github.modusensus/mneme-memory",
   "title": "Mneme Memory",
   "description": "Cross-session memory for AI coding agents via six tools; local-first SQLite store.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "source": "github",
     "url": "https://github.com/slow-stack/mneme"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "mneme-memory",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       }
