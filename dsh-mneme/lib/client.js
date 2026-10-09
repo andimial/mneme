@@ -406,6 +406,12 @@ window.__ModuleLoader__.load({
         "memory.settings.extapi.token": "Token",
         "memory.settings.extapi.copy": "复制",
         "memory.settings.extapi.copied": "已复制",
+        "memory.settings.serve.title": "独立服务 dsh-mneme-serve",
+        "memory.settings.serve.desc": "不启动 DSH 也能以 HTTP 方式访问同一份记忆库（无 LLM 数据面）。",
+        "memory.settings.serve.cmd": "npx -p @modusensus/dsh-mneme dsh-mneme-serve --memory-dir <记忆库目录> --port <端口>",
+        "memory.settings.serve.copy": "复制",
+        "memory.settings.serve.copied": "已复制",
+        "memory.settings.serve.hint": "与「外部访问 API」同源：同一套路由与鉴权，指向同一记忆库目录时，调用方应使用面板这张令牌（通常有效，非承诺）。两者默认抢同一端口，二选一或用 --port 错开。",
         "memory.settings.extapi.savedHint": "已保存，重启 DSH 后生效",
         "memory.settings.extapi.invalidPort": "端口需为 1-65535 的数字",
         "memory.tab.rejected_solution": "被否决方案",
@@ -861,6 +867,12 @@ window.__ModuleLoader__.load({
         "memory.settings.extapi.token": "Token",
         "memory.settings.extapi.copy": "Copy",
         "memory.settings.extapi.copied": "Copied",
+        "memory.settings.serve.title": "Standalone service: dsh-mneme-serve",
+        "memory.settings.serve.desc": "Reach the same memory library over HTTP without starting DSH (no LLM data plane).",
+        "memory.settings.serve.cmd": "npx -p @modusensus/dsh-mneme dsh-mneme-serve --memory-dir <memory-dir> --port <port>",
+        "memory.settings.serve.copy": "Copy",
+        "memory.settings.serve.copied": "Copied",
+        "memory.settings.serve.hint": "Shares routes and auth with the external API: when pointing at the same memory directory, callers should use the panel's token (expected to work, not guaranteed). Both default to the same port — enable one or offset with --port.",
         "memory.settings.extapi.savedHint": "Saved. Takes effect after restarting DSH",
         "memory.settings.extapi.invalidPort": "Port must be a number between 1 and 65535",
         "memory.tab.rejected_solution": "Rejected solutions",
@@ -2855,6 +2867,16 @@ window.__ModuleLoader__.load({
         );
       }
 
+      // 示例命令必须带 -p 包名：bin 名与包名不同，裸 npx 加 bin 名会去装一
+      // 个不存在的同名 npm 包（client.test.js 对此有字面量锁，注释也别写它）。
+      const [serveCopied, setServeCopied] = useState(false);
+      function copyServeCmd() {
+        navigator.clipboard?.writeText(t("memory.settings.serve.cmd")).then(
+          () => { setServeCopied(true); announce(t("memory.settings.serve.copied")); setTimeout(() => setServeCopied(false), 1500); },
+          () => {}
+        );
+      }
+
       return h("div", null,
         // 版本自检横幅 — 仅 outdated 时渲染（up-to-date/ahead/unknown/失败
         // 全部零渲染）。钉子警示：安装时指定过版本号的 profile 会被 pnpm
@@ -3058,6 +3080,23 @@ window.__ModuleLoader__.load({
                   )
                 )
               )
+        ),
+        // 独立服务卡片（issue #386 第 1 条）：纯只读展示 + 复制，不做进程
+        // 启停/守护/端口探测。同源措辞用「应/通常」——令牌同源未全部实测，
+        // 不写成已保证（见该 issue 讨论口径）。
+        h("section", { className: "mneme-set-card" },
+          h("div", { className: "mneme-set-title" }, t("memory.settings.serve.title")),
+          h("div", { className: "mneme-set-desc" }, t("memory.settings.serve.desc")),
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            h("code", {
+              className: "mneme-set-token",
+              style: { flex: 1, minWidth: 0 }
+            }, t("memory.settings.serve.cmd")),
+            h("button", { className: "mneme-btn", onClick: copyServeCmd },
+              t("memory.settings.serve.copy")),
+            serveCopied && h("span", { className: "mneme-saved" }, t("memory.settings.serve.copied"))
+          ),
+          h("div", { className: "mneme-set-hint", style: { marginTop: 10 } }, t("memory.settings.serve.hint"))
         ),
         // 向量搜索卡片已上移到「搜索」分组（与功能开关里的语义检索路线相邻），
         // 这里不再重复渲染。

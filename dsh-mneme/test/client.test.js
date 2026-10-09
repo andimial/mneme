@@ -1179,6 +1179,25 @@ test("mirror health: card wired with fail-closed unknown rendering", () => {
     assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
   }
 });
+
+// --- issue #386 第 1 条：独立服务只读卡片 ---
+// 卡片展示 dsh-mneme-serve 示例命令并支持复制。关键锁：命令不能写成
+// `npx dsh-mneme-serve …` —— bin 名与包名不同，裸 npx 会尝试安装一个不存在
+// 的 npm 包「dsh-mneme-serve」，用户复制出去必然报错。
+test("serve card: sample command is npx-installable and card is wired", () => {
+  assert.ok(clientSource.includes('"memory.settings.serve.title"'), "serve card must exist in the settings view");
+  assert.ok(clientSource.includes("copyServeCmd"), "serve command must have a copy affordance");
+  assert.ok(clientSource.includes("npx -p @modusensus/dsh-mneme dsh-mneme-serve"), "sample command must name the real package via -p");
+  assert.equal(clientSource.includes("npx dsh-mneme-serve"), false, "bare `npx dsh-mneme-serve` would install a nonexistent package");
+  for (const key of [
+    "memory.settings.serve.title",
+    "memory.settings.serve.cmd",
+    "memory.settings.serve.hint"
+  ]) {
+    const occurrences = clientSource.split(`"${key}"`).length - 1;
+    assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
+  }
+});
 // 面板 bundle 在本文件里只被当**文本**读（上面的断言全是正则/字符串包含），
 // 而仓库的 CI 里没有任何一步**解析**它：于是重复声明这类语法错误能一路绿灯进
 // 主干，后果却是整个面板加载失败（__ModuleLoader__ 拿到的模块一执行就抛
