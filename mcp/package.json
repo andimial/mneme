@@ -1,7 +1,7 @@
 {
   "name": "mneme-memory",
   "mcpName": "io.github.modusensus/mneme-memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mneme memory tools as a stdio MCP server — cross-session memory for any MCP client (Claude Code / Cursor / Codex / Hermes / OpenCode / OpenClaw), backed by the dsh-mneme plugin's standalone API.",
   "license": "MIT",
   "type": "module",
