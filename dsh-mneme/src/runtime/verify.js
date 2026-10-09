@@ -20,7 +20,7 @@
 // @module dsh-mneme/runtime/verify
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { TRANSFORMERS_ENTRY, describePayload, recordedIntegrity } from "./layout.js";
+import { TRANSFORMERS_ENTRY, defaultModelCacheDir, describePayload, recordedIntegrity } from "./layout.js";
 
 /**
  * 能证明「与清单里的 sha512 一致」的状态词。下载通道（`download.js`）记的是 `"verified"`，
@@ -41,23 +41,42 @@ const NORM_TOLERANCE = 0.01;
 const DEGENERATE_COS = 0.999;
 
 /**
+ * 把模型缓存目录解析到「真的有一份模型」的地方：空值落回用户级默认目录。
+ *
+ * `embedModelCacheDir` 这条配置的约定是「空 = ~/.dsh/mneme/models」（README、CONFIGURATION.md、
+ * LOCAL_MODEL.md 都这么写），local-embedder 与 reranker 也各自按 `String(x ?? "").trim() || 默认`
+ * 解析。验证模块一度把这个值原样交给 transformers.js —— 而 transformers.js 收到 `undefined`
+ * 等于「不设置 env.cacheDir」，于是它转去找包内相对路径：真实嵌入用的是用户目录那份模型，面板
+ * verify 却去包内找，报出 `functional: false` 的假失败（issue #387）。解析收在默认 engine 这层
+ * 而不是调用方，是为了让「验证与真实推理用同一份模型」成为模块自身的不变量：任何调用点都
+ * 不可能再因为传了空串而验错地方。
+ * @param {string} [cacheDir] - 配置或调用方给的缓存目录，允许空值。
+ * @returns {string} 可用的缓存目录（绝对路径）。
+ */
+export function resolveModelCacheDir(cacheDir) {
+  return String(cacheDir ?? "").trim() || defaultModelCacheDir();
+}
+
+/**
  * 默认 engine：真的去 import 运行时并建一个 feature-extraction 管道。
  *
  * 返回一个 `embed(texts) => number[][]`。之所以不返回 transformers 的 tensor，
  * 是为了把「Tensor 形状怎么读」这种细节留在实现里，验证逻辑只看数字。
  * @param {string} entryUrl - 入口文件的 file URL。
  * @param {{cacheDir?: string, model?: string, dtype?: string, device?: string}} opts - 选项。
+ *   `cacheDir` 允许空值（落回用户级默认目录，见 {@link resolveModelCacheDir}）。
  * @returns {Promise<(texts: string[]) => Promise<number[][]>>} 嵌入函数。
  */
 export async function defaultEngine(entryUrl, { cacheDir, model = DEFAULT_PROBE_MODEL, dtype = "q8", device = "cpu" } = {}) {
   const mod = await import(entryUrl);
   const { env, pipeline } = mod;
-  if (cacheDir) {
-    try {
-      env.cacheDir = cacheDir;
-    } catch {
-      /* 老版本可能没有这个字段：忽略，交给下面 pipeline 自己找缓存 */
-    }
+  // 空值必须在这里就补上默认目录：交给 transformers.js 自己决定，它会去找包内相对路径，
+  // 验证就变成「拿另一份模型下结论」（issue #387）。
+  const resolvedCacheDir = resolveModelCacheDir(cacheDir);
+  try {
+    env.cacheDir = resolvedCacheDir;
+  } catch {
+    /* 老版本可能没有这个字段：忽略，交给下面 pipeline 自己找缓存 */
   }
   // 验证不允许触网：缓存命中就本地加载，命中不了就明确失败。
   try {
@@ -65,7 +84,7 @@ export async function defaultEngine(entryUrl, { cacheDir, model = DEFAULT_PROBE_
   } catch {
     /* 同上 */
   }
-  const extractor = await pipeline("feature-extraction", model, { dtype, device, cache_dir: cacheDir });
+  const extractor = await pipeline("feature-extraction", model, { dtype, device, cache_dir: resolvedCacheDir });
   return async (texts) => {
     const tensor = await extractor(texts, { pooling: "mean", normalize: true });
     const dims = Array.from(tensor.dims ?? []);

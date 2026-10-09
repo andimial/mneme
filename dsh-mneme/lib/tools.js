@@ -680,7 +680,13 @@ export function createTools(ctx, service, config, embedder) {
           if (candidate === null) {
             return { summary: "No usable runtime payload to verify.", status: "missing", cost };
           }
-          const report = await verifyPayload(candidate.dir, { cacheDir: config?.embedModelCacheDir || undefined });
+          // 验的必须是用户真实在用的那一份：缓存目录与嵌入模型都跟配置走。空目录交给 verify
+          // 自己补默认值（「空 = ~/.dsh/mneme/models」是配置与文档的约定，嵌入侧同一份解析）；
+          // 模型不给会让 verify 恒探默认小模型，用户换了模型时这份结论就不是他实际使用的那份（#387）。
+          const report = await verifyPayload(candidate.dir, {
+            cacheDir: config?.embedModelCacheDir,
+            model: config?.localEmbedModel || undefined
+          });
           return {
             summary: report.ok
               ? `Runtime verified: real inference succeeded (dim ${report.functional.dim}, ${report.functional.rows} rows, ` +

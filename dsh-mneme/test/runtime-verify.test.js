@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PROBE_TEXTS, defaultEngine, verifyFunctional, verifyPayload } from "../src/runtime/verify.js";
-import { TRANSFORMERS_ENTRY } from "../src/runtime/layout.js";
+import { DEFAULT_PROBE_TEXTS, defaultEngine, resolveModelCacheDir, verifyFunctional, verifyPayload } from "../src/runtime/verify.js";
+import { TRANSFORMERS_ENTRY, defaultModelCacheDir } from "../src/runtime/layout.js";
 import { pathToFileURL } from "node:url";
 
 // 验证三件套（issue #131 / PR-A）。重点不是「能跑通」，而是「坏的那几种能被抓住」：
@@ -92,6 +92,24 @@ test("功能验证：返回空向量要报出来，而不是当成 dim=0 通过"
   const result = await verifyFunctional("/whatever", { engine: engineReturning([[], []]) });
   assert.equal(result.ok, false);
   assert.match(result.reason, /空向量/);
+});
+
+test("功能验证：cacheDir 与 model 都透传给 engine（面板必须验配置里那一份，不是探针默认值）", async () => {
+  // 锁的是调用链上的接线，不是解析规则本身：tools.js 的 verify 分支把 config 的
+  // embedModelCacheDir / localEmbedModel 交给 verifyPayload，中间任何一段丢参数，
+  // 验的都变成「另一份模型」，结论就不再是用户实际使用情况的证据（issue #387）。
+  let seen = null;
+  const result = await verifyFunctional("/whatever", {
+    engine: async (entryUrl, opts) => {
+      seen = opts;
+      return async () => fakeRows(2, 8);
+    },
+    cacheDir: "",
+    model: "Xenova/bge-m3"
+  });
+  assert.equal(result.ok, true, result.reason);
+  assert.equal(seen.model, "Xenova/bge-m3");
+  assert.equal(seen.cacheDir, "");
 });
 
 test("三件套：结构不过就不再做功能验证（省掉一次无谓的加载）", async () => {
@@ -259,7 +277,7 @@ export async function pipeline(kind, model, opts) {
   return pathToFileURL(entry).href;
 }
 
-test("defaultEngine: 假 transformers 入口可驱动嵌入，并按输出维度做行切分", async () => {
+test("defaultEngine: 假 transformers 入口可驱动嵌入，并按输出维度做行切分；显式 cacheDir 按原样用", async () => {
   const entry = fakeEntry([2, 4]);
   const embed = await defaultEngine(entry, { cacheDir: "/tmp/mneme-cache" });
   const rows = await embed(["猫咪", "fox"]);
@@ -268,8 +286,30 @@ test("defaultEngine: 假 transformers 入口可驱动嵌入，并按输出维度
   assert.deepEqual(rows[1], [5, 6, 7, 8]);
   // 缓存目录与离线开关必须落到 env：验证过程绝不能偷偷下载模型。
   assert.equal(globalThis.__engineSeen.cacheDir, "/tmp/mneme-cache");
+  assert.equal(globalThis.__engineSeen.opts.cache_dir, "/tmp/mneme-cache", "显式配的目录不许被默认值顶掉");
   assert.equal(globalThis.__engineSeen.remote, false);
   assert.equal(globalThis.__engineSeen.kind, "feature-extraction");
+});
+
+test("defaultEngine: cacheDir 省略或为空串时落到用户级默认目录（issue #387）", async () => {
+  // #387 的现场：embedModelCacheDir 的 schema 默认值就是空串，而 transformers.js 收到
+  // 空/undefined 等于「不设置 env.cacheDir」——它转去找包内相对路径，于是真实嵌入用的是
+  // 用户目录那份模型、面板 verify 却在包内找，报出 functional: false 的假失败。
+  // 空值必须在这里补成与嵌入侧同一个目录，「验证用哪份模型」才不再取决于调用方有没有填配置。
+  for (const given of [undefined, "", "   "]) {
+    const entry = fakeEntry([2, 4]);
+    await defaultEngine(entry, { cacheDir: given });
+    const expected = defaultModelCacheDir();
+    assert.equal(globalThis.__engineSeen.cacheDir, expected, `env.cacheDir 没落到默认目录（cacheDir=${JSON.stringify(given)}）`);
+    assert.equal(globalThis.__engineSeen.opts.cache_dir, expected, `pipeline 也没拿到默认目录（cacheDir=${JSON.stringify(given)}）`);
+  }
+});
+
+test("resolveModelCacheDir：只有空值才补默认", () => {
+  assert.equal(resolveModelCacheDir("/custom/models"), "/custom/models");
+  assert.equal(resolveModelCacheDir("  /custom/models  "), "/custom/models");
+  assert.equal(resolveModelCacheDir(undefined), defaultModelCacheDir());
+  assert.equal(resolveModelCacheDir(null), defaultModelCacheDir());
 });
 
 test("defaultEngine: 输出宽度为 0 时明确抛错（防止调用方死循环）", async () => {
