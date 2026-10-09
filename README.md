@@ -76,6 +76,10 @@ dsh web
 
 > 以上均在 DSH 设置面板 → 记忆库设置 中修改。完整配置见 [配置章节](dsh-mneme/README.md)。
 
+### 记忆库落点建议
+
+记忆库默认在 `~/.dsh/memory`，天然在宿主 profile 作用域之外；但真实落点由 `memoryDir` 配置决定。若把它指进 profile 作用域（形如 `…/profiles/<名字>/…`），宿主清理或迁移 profile 时记忆库会被连带带走（#218 末楼记录的实际事故）。插件启动时检测到这种落点会打一条告警——**只提示、不搬库**。安全做法：`memoryDir` 保持在 profile 之外（默认值即可）；要迁移库 = 停止写入 → 复制整个目录 → 改配置指向新位置 → 重启。
+
 ## 一图看懂记忆闭环
 
 ```
@@ -278,6 +282,10 @@ It works out of the box. To feel its value in five minutes:
 | Memory isolation per agent / workspace | `scopeEnabled` (add `strictScope` for stronger isolation — hard blocking applies to explicit declarations only) | `false` | Change to `true` |
 
 > All of these live in DSH Settings → Memory Settings. Full config docs in the [Configuration section](dsh-mneme/README.md) (Chinese, bilingual file).
+
+### Where to put the memory library
+
+The library defaults to `~/.dsh/memory`, which is naturally outside any host profile scope; the actual location follows your `memoryDir` config. If it points inside a profile scope (a path like `…/profiles/<name>/…`), the library is taken away along with the profile when the host cleans or migrates it (an actual incident recorded in #218). The plugin logs a warning at startup when it detects such a location — **advisory only, it never moves your data**. Safe practice: keep `memoryDir` outside profiles (the default already is); to migrate, stop writing → copy the whole directory → point the config at the new location → restart.
 
 ## The memory loop in one diagram
 
