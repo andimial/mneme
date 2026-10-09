@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-10-10
+
 ## 🆕 新增
+
+- **面板暴露后端已有能力（issue #386 第一批）**：三张只读卡补齐「后端已实现、面板未暴露」的信息盲区。① 状态页「库内一览」新增「Markdown 镜像」健康卡，读 `GET /api/dsh-mneme/health` 展示 `mirror.status`（ok/degraded/unknown）、未落盘提示、`last_error` 三码（磁盘满 / 权限不足 / 同步失败）的人话映射与上次尝试/上次成功时间——面板侧与后端同为 **fail-closed**：请求失败或 unknown 一律显示「未知」，绝不显示「正常」（镜像写失败此前在库内完全静默）；② 设置「连接与安全」新增「独立服务 `dsh-mneme-serve`」卡（一行示例命令 + 复制，并提示它与外部访问 API 默认抢同一端口、令牌同源）；③ 同组新增「MCP 服务 `dsh-mneme-mcp`」卡（可复制的 `.mcp.json` 挂载片段，数据面走外部访问 API 的 Bearer）。三张卡纯展示，不做进程启停/守护/端口探测，不加配置键；示例命令必须带 `-p @modusensus/dsh-mneme`——bin 名与包名不同，裸 `npx` 会去装一个不存在的同名包（`test/client.test.js` 有字面量锁）。
+- **记忆库落点检测告警（issue #368）**：`memoryDir` 落在宿主 profile 作用域（形如 `…/profiles/<名字>/…`）时，启动打一条可操作告警——#218 末楼记录过 profile 被清理导致整库连带丢失的实际事故。判定是纯路径段匹配（跨平台分隔符、大小写不敏感，只认显式 `profiles` 段，不做「看起来像用户数据」的猜测：漏报可容忍、误报等于狼来了）。**只检测不搬迁**：不改行为、不动数据、不加配置键、不进 settings 白名单（路径配置不是行为开关，与 `documentDir` 同口径），存量用户零迁移。根 README 中英成对补「记忆库落点建议」节。
 
 - **注入前判定 `preInjectGate`（issue #380，E12 D1 裁决落地，opt-in 默认关）**：每帧注入候选出池后、进入 system prompt 前，一次**池级** LLM 调用判出「会向本次请求注入意见/立场」的记忆（判定协议与 E12 实验 protocol-preinject.txt 同源；E12 实测判定+过滤把谄媚率 26.9%→2.5%，且 MemGauge 三阶段考卷实测写入/巩固/检索预算三面对内容毒均无防线——这是唯一过预注册判据的机制）。两级语义复用 #254 writeAdmission：`enabled` 观察档（判定完成落 `llm_audit_logs`，真实 token 用量 + 被标记记忆 id，先看真实负载的意见占比分布）、`enforce` 缓存命中帧真滤除（E12：判定+标记比过滤差 +17.6pp，判定结果**绝不进模型上下文**）。宿主注入渲染是同步回调 → 判定走 async prefetch + cache 同步消费（queryVectorCache 同款），冷缓存首帧降级为原样注入、下一轮同 key 渲染生效；判定失败原样注入 + `degraded` 审计行（审计行**无条件落**，无默认模型路由时 `model_id` 落 `unknown` 占位），防线故障永不阻塞注入；连续降级熔断一个冷却期（判定器系统性坏掉时不逐帧花钱，到期自动恢复）。审查加固（#382 评审）：判定与滤除移进 `service.injectCandidates` 的 `touchRecalled` **之前**（与 strictScope 同纪律——留在调用方做时，被滤掉的记忆照样刷温时钟并落 `mode='inject'` 曝光账，反馈环会把闸门想压下的意见记忆重新顶上来），`recall_runs` 的「实际注入集」随之只吃滤后集合；**整池被标记**时放弃本帧 enforce（fail-open：记忆正文可影响判定模型，一条指令型记忆不该让整个记忆块静默失明），形态即审计行的 `n_flagged == n_pool`；`clear()`（dispose 钩子）后置 disposed、在飞判定不回写缓存；缓存命中刷新序（LRU）。pin 池（#249 逐字保真）与 graphHint 线索行豁免；候选映射 `m#<i>` 局部序号（E13b 实测 UUID 回显脆弱）；缓存键 = 查询 + 候选 `id:内容` 集（轮换/新记忆/内容被就地修正即重判）；`llmAudit` 关闭时本闸不运行；lightMode 强制关（`applyLightModePreset` 支持点分键）。白名单 + 计数锁 +2 + 文档（CONFIGURATION.md 新节）。
 
@@ -17,6 +22,8 @@
 ## 🧹 工程
 
 - **code-scanning 依赖告警清零（`sharp` 0.35.4 → 0.35.5）**：GitHub code-scanning 上仅剩的一条 open 告警是 `sharp@0.35.4` 命中 `GHSA-wq5f-xc86-pv6w`（CVE-2026-96889，severity high，修复版 **0.35.5**——随包把上游 librsvg 带到 2.63.2）。它在 mneme 里不是直接依赖，而是 `@huggingface/transformers` 声明的 `^0.35.4` 传递依赖（本地嵌入运行时构建面，npm 用户装不到）。只改 lockfile 不够：`runtime-manifest.json` 把 `sharp` 与 23 个 `@img/sharp-*`（libvips 1.3.3）连 tarball 与 sha512 一起钉死并分发给用户，而扫描器看不见 JSON 清单，漏洞版本会继续发出去。故 lockfile 与清单同步升到 `sharp 0.35.5` + `@img/sharp-* 0.35.5` + libvips `1.3.4`（同一 `^0.35.4` 区间内，无 API 变更）。可达性本身很低——mneme 只做文本嵌入与重排，没有任何 `sharp()` 调用（不解码 SVG），RCE 还需 glibc Linux 且要攻击者提供 SVG；修的理由是升级免费且清单面向最终用户。`npm audit`（含 dev 与 `--omit=dev` 双口径）0 vulnerabilities；全量测试 1561/1560 pass/0 fail/1 skip。
+
+- **npm 包 `files` 补发 `docs/`，`allowScripts` 对齐 lockfile**：README 有 9 处相对链接指向 `docs/*.md`，而 `files` 白名单不含 `docs`——这些设计文档在 npm 页面全 404（GitHub 上正常）。白名单加入 `docs`（8 个 md 随包发布）。同处清掉另一笔陈旧账：`allowScripts` 还写着 `onnxruntime-node@1.24.3` 与 `sharp@0.34.5`，实际锁文件是 `1.30.0` / `0.35.5`，而 sharp 0.35.x 已不带 install 脚本——按 `1.30.0` 保留 onnxruntime 的 postinstall 白名单、删除 sharp 条目（#384 明确欠的后续）。
 
 ## [0.8.14] - 2026-10-06
 
