@@ -38,6 +38,7 @@
     "lib",
     "locale",
     "src",
+    "docs",
     "scripts",
     "test",
     "runtime-manifest.json",
