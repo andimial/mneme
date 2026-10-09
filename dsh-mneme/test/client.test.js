@@ -1156,6 +1156,29 @@ test("a11y+preview: inject preview card is wired on the status tab", () => {
     assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
   }
 });
+// --- issue #386 第 3 条：Markdown 镜像健康卡 ---
+// 镜像写失败（磁盘满/权限）在记忆库侧完全静默，状态页这张卡是最早的可见信号。
+// 关键不变量是 fail-closed：fetch 失败或 status 不是 ok/degraded 时必须渲染
+// 「未知」——这里锁死派生表达式，防止未来被「简化」成把未知当正常显示。
+test("mirror health: card wired with fail-closed unknown rendering", () => {
+  assert.ok(clientSource.includes('"/api/dsh-mneme/health"'), "mirror card must fetch the health endpoint");
+  assert.ok(clientSource.includes("h(MirrorHealthCard, { t })"), "overview grid must render the mirror card");
+  const status = clientSource.match(/const status = m && \(m\.status === "ok" \|\| m\.status === "degraded"\) \? m\.status : "unknown";/);
+  assert.ok(status, "non-ok/non-degraded status (incl. fetch failure) must collapse to unknown, never ok");
+  assert.ok(clientSource.includes('m.last_error === "no-space"'), "last_error no-space must be mapped to human text");
+  assert.ok(clientSource.includes('m.last_error === "permission"'), "last_error permission must be mapped to human text");
+  for (const key of [
+    "memory.status.mirror.ok",
+    "memory.status.mirror.degraded",
+    "memory.status.mirror.unknown",
+    "memory.status.mirror.err.noSpace",
+    "memory.status.mirror.err.permission",
+    "memory.status.mirror.err.syncFailed"
+  ]) {
+    const occurrences = clientSource.split(`"${key}"`).length - 1;
+    assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
+  }
+});
 // 面板 bundle 在本文件里只被当**文本**读（上面的断言全是正则/字符串包含），
 // 而仓库的 CI 里没有任何一步**解析**它：于是重复声明这类语法错误能一路绿灯进
 // 主干，后果却是整个面板加载失败（__ModuleLoader__ 拿到的模块一执行就抛
