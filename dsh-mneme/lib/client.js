@@ -703,6 +703,19 @@ window.__ModuleLoader__.load({
       "memory.status.vectorUnconfigured": "未配置",
       "memory.status.vectorUnconfiguredHint": "未填 embedding 端点/模型或未启用，语义召回不可用",
       "memory.status.vectorDegradedHint": "已索引 0 / {m} 条，语义召回实际不可用",
+        "memory.status.mirror": "Markdown 镜像",
+        "memory.status.mirror.ok": "正常",
+        "memory.status.mirror.degraded": "降级",
+        "memory.status.mirror.unknown": "未知",
+        "memory.status.mirror.dirty": "有未落盘改动",
+        "memory.status.mirror.yes": "是",
+        "memory.status.mirror.lastError": "最近错误",
+        "memory.status.mirror.err.noSpace": "磁盘空间不足",
+        "memory.status.mirror.err.permission": "权限不足",
+        "memory.status.mirror.err.syncFailed": "同步失败",
+        "memory.status.mirror.lastAttempt": "上次尝试",
+        "memory.status.mirror.successAt": "上次成功",
+        "memory.status.mirror.foot": "记忆条目在磁盘上的 Markdown 副本同步状态",
         "memory.status.sec.overview": "库内一览",
         "memory.status.sec.engine": "后台运转",
         "memory.status.llm": "LLM 消耗",
@@ -1151,6 +1164,19 @@ window.__ModuleLoader__.load({
       "memory.status.vectorUnconfigured": "Not configured",
       "memory.status.vectorUnconfiguredHint": "No embedding endpoint/model configured — semantic recall is off",
       "memory.status.vectorDegradedHint": "Indexed 0 / {m} items — semantic recall is effectively unavailable",
+        "memory.status.mirror": "Markdown mirror",
+        "memory.status.mirror.ok": "Healthy",
+        "memory.status.mirror.degraded": "Degraded",
+        "memory.status.mirror.unknown": "Unknown",
+        "memory.status.mirror.dirty": "Unflushed changes",
+        "memory.status.mirror.yes": "Yes",
+        "memory.status.mirror.lastError": "Last error",
+        "memory.status.mirror.err.noSpace": "Disk full",
+        "memory.status.mirror.err.permission": "Permission denied",
+        "memory.status.mirror.err.syncFailed": "Sync failed",
+        "memory.status.mirror.lastAttempt": "Last attempt",
+        "memory.status.mirror.successAt": "Last success",
+        "memory.status.mirror.foot": "Sync state of the on-disk Markdown mirror of memory entries",
         "memory.status.sec.overview": "Library",
         "memory.status.sec.engine": "Background activity",
         "memory.status.llm": "LLM Usage",
@@ -3484,6 +3510,45 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // Markdown 镜像健康卡（issue #386 第 3 条）。后端 /health 对镜像读失败是
+    // fail-closed（dirty=null → unknown）；面板侧同样 fail-closed：fetch 失败
+    // 或任何非 ok/degraded 的 status 一律渲染成「未知」，绝不显示「正常」——
+    // 镜像写失败（磁盘满/权限）在库内完全静默，这张卡是最早的可见信号。
+    function MirrorHealthCard({ t }) {
+      const [state, setState] = useState({ loading: true, mirror: null });
+      useEffect(() => {
+        let cancelled = false;
+        apiFetch("/api/dsh-mneme/health")
+          .then((res) => { if (!res.ok) throw new Error("http"); return res.json(); })
+          .then((j) => { if (!cancelled) setState({ loading: false, mirror: (j && j.mirror) || null }); })
+          .catch(() => { if (!cancelled) setState({ loading: false, mirror: null }); });
+        return () => { cancelled = true; };
+      }, []);
+      const m = state.mirror;
+      const status = m && (m.status === "ok" || m.status === "degraded") ? m.status : "unknown";
+      const num = status === "ok" ? t("memory.status.mirror.ok")
+        : status === "degraded" ? t("memory.status.mirror.degraded")
+        : t("memory.status.mirror.unknown");
+      const errText = !m || !m.last_error ? null
+        : m.last_error === "no-space" ? t("memory.status.mirror.err.noSpace")
+        : m.last_error === "permission" ? t("memory.status.mirror.err.permission")
+        : t("memory.status.mirror.err.syncFailed");
+      const rows = [];
+      if (m && m.dirty === true) rows.push({ key: "dirty", label: t("memory.status.mirror.dirty"), value: t("memory.status.mirror.yes") });
+      if (errText) rows.push({ key: "err", label: t("memory.status.mirror.lastError"), value: errText });
+      rows.push({ key: "attempt", label: t("memory.status.mirror.lastAttempt"), value: formatRelativeTime(m && m.last_attempt, t) });
+      rows.push({ key: "success", label: t("memory.status.mirror.successAt"), value: formatRelativeTime(m && m.success_at, t) });
+      return h(StatusCard, {
+        t,
+        title: t("memory.status.mirror"),
+        loading: state.loading,
+        error: false,
+        num,
+        rows,
+        foot: t("memory.status.mirror.foot")
+      });
+    }
+
     // LLM 消耗 — calls + tokens over the trailing 7 days.
     function LlmStatusCard({ t }) {
       const [state, setState] = useState({ loading: true, error: false, calls: 0, tokens: 0 });
@@ -4057,7 +4122,8 @@ window.__ModuleLoader__.load({
         h("div", { className: "mneme-statusgrid mneme-statusgrid--overview" },
           h(MemoriesStatusCard, { t }),
           h(EntitiesStatusCard, { t }),
-          h(VectorStatusCard, { t })
+          h(VectorStatusCard, { t }),
+          h(MirrorHealthCard, { t })
         ),
         h("div", { className: "mneme-statushead" }, t("memory.status.sec.engine")),
         h("div", { className: "mneme-statusgrid" },
