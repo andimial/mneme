@@ -1156,6 +1156,24 @@ test("a11y+preview: inject preview card is wired on the status tab", () => {
     assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
   }
 });
+// --- issue #386 第 2 条：MCP 接入卡 ---
+// 可发现性缺口：dsh-mneme-mcp 此前面板一个字都没有。锁三件事：片段必须带
+// DSH_MNEME_TOKEN（MCP 数据面走外部访问 API 的 Bearer，不是面板本地
+// localStorage 那把）、复制入口存在、i18n 中英成对。
+test("mcp card: mount snippet is copyable and token-keyed to the external API", () => {
+  assert.ok(clientSource.includes('"memory.settings.mcp.title"'), "mcp card must exist in the settings view");
+  assert.ok(clientSource.includes("copyMcpSnippet"), "mcp snippet must have a copy affordance");
+  assert.ok(clientSource.includes("DSH_MNEME_TOKEN"), "snippet must key the external-API Bearer token");
+  assert.ok(clientSource.includes("mcpServers"), "snippet must be an .mcp.json fragment");
+  for (const key of [
+    "memory.settings.mcp.title",
+    "memory.settings.mcp.snippet",
+    "memory.settings.mcp.hint"
+  ]) {
+    const occurrences = clientSource.split(`"${key}"`).length - 1;
+    assert.ok(occurrences >= 2, `i18n key ${key} must exist in both zh and en (got ${occurrences})`);
+  }
+});
 // 面板 bundle 在本文件里只被当**文本**读（上面的断言全是正则/字符串包含），
 // 而仓库的 CI 里没有任何一步**解析**它：于是重复声明这类语法错误能一路绿灯进
 // 主干，后果却是整个面板加载失败（__ModuleLoader__ 拿到的模块一执行就抛
