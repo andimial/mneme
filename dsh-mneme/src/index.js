@@ -2,6 +2,8 @@ import { createStore } from "./store.js";
 import { createMirror, TYPE_FILE } from "./mirror.js";
 import { createDocumentIndex } from "./document-index.js";
 import { resolveDocumentDir } from "./document.js";
+// #368 v1：profile 作用域落点检测（只提示，不改行为）。
+import { findProfileScopeSegment } from "./placement.js";
 import { createService } from "./service.js";
 // #254 写入准入（第一阶段只计量，不拦截）：见 src/write-admission.js 的文件头。
 import { createWriteAdmission } from "./write-admission.js";
@@ -169,6 +171,16 @@ export const apply = (ctx, config) => {
     ? join(homedir(), rawCfg.memoryDir.slice(1))
     : rawCfg.memoryDir;
   mkdirSync(memoryDir, { recursive: true });
+
+  // #218 末楼的实际事故：profile 被清理，落在其中的记忆库连带丢失。命中
+  // profile 作用域时给一条可操作的告警（只提示、不搬库、不加配置键），启发
+  // 式的边界与取舍见 src/placement.js 文件头。
+  const profileScope = findProfileScopeSegment(memoryDir);
+  if (profileScope) {
+    ctx.logger?.warn?.(
+      `[dsh-mneme] memoryDir is inside a profile scope ("${profileScope}"): ${memoryDir} — the library may be lost when the host cleans or migrates profiles. Prefer a location outside profiles/ (default: ~/.dsh/memory; config key: memoryDir).`
+    );
+  }
 
   const store = createStore(join(memoryDir, "memory.db"));
   // Prune reflection failure rows older than 90 days on boot (best-effort, so
