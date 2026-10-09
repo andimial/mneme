@@ -98,6 +98,7 @@ node scripts/mneme-runtime.mjs verify --cache-dir ~/.dsh/mneme/models
 
 - 退出码：`0` 健康 / `1` 不健康或失败 / `2` 用法错误（便于脚本直接 gate，区分「没装」和「装坏了」看输出里的 `status`）。加 `--json` 得到机器可读结果。
 - `verify` 的功能验证**不触网**（`allowRemoteModels=false`）：模型必须已在缓存目录里，否则会明确失败——这是有意的，验证不该偷偷触网。缓存不在默认位置时用 `--cache-dir` 指到与 `embedModelCacheDir` 一致的位置。
+- 三条入口（CLI / 面板 / `memory_runtime`）的判据是同一份：缓存目录取 `embedModelCacheDir`（**留空即用户级默认目录**，与真实嵌入同一处解析），探针模型取 `localEmbedModel`（留空即默认小模型）。也就是说验证用的就是真实推理用的那份模型——CLI 不需要额外 `--cache-dir`，面板也不会跑到包内去找（#387 修的就是这个不一致）。
 - 收编来的目录没有可比对的原始产物，完整性如实标 `unverified`，不假装验过；结构检查通过 ≠ 功能可用，两者分开报。
 - `status` 只做结构检查，所以 `functional` 恒为 `unknown`——要看真实推理结果就跑 `verify`。
 - 运行时不可用时插件不会崩：检索降级为关键词/BM25，读写在任何情况下都不受影响；错误信息会带上 `adopt` 的具体命令。

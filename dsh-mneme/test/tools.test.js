@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { assertSupportedJsonSchema, validateJsonSchemaValue } from "@deepseek-ai/dsh-tools";
 import { createStore } from "../src/store.js";
 import { createService } from "../src/service.js";
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTools } from "../src/tools.js";
+import { TRANSFORMERS_ENTRY, defaultModelCacheDir, payloadDir, payloadId } from "../src/runtime/layout.js";
 
 function setup(embedder, config = {}) {
   const store = createStore(":memory:");
@@ -371,4 +372,57 @@ test("memory_runtime：status 只读且带代价说明；两条来源都不可�
   assert.equal(provision.status, "failed");
   assert.match(provision.reason, /收编失败|下载失败/);
   assert.equal(existsSync(runtimeDir) ? readdirSync(runtimeDir).length : 0, 0, "失败后不该留下半份 payload");
+});
+
+/**
+ * 造一份「结构合法、入口是可记录的假 transformers」的 payload：
+ * 让 memory_runtime 的 verify 分支能整条跑通而不真加载原生运行时。
+ * 形状照 test/runtime-loader.test.js 的 makePayload，只是入口换成会把自己收到的参数写进
+ * globalThis 的假模块 —— 面板验证的失败现场（#387）正是「它到底拿哪份模型、去哪个目录找」。
+ */
+function makePayloadWithFakeEntry(runtimeDir, { version = "4.2.0" } = {}) {
+  const platform = process.platform;
+  const arch = process.arch;
+  const dir = payloadDir(runtimeDir, payloadId({ version, platform, arch }));
+  const write = (rel, body) => {
+    const full = join(dir, rel);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, body);
+  };
+  for (const name of ["@huggingface/transformers", "onnxruntime-node", "sharp"]) {
+    write(join("node_modules", name, "package.json"), JSON.stringify({ name, version: name === "@huggingface/transformers" ? version : "1.0.0" }));
+  }
+  // 两行归一化且不共线的向量：verifyFunctional 会验模长与退化余弦，假 engine 也得满足契约，
+  // 否则这条用例会因为「假数据不合格」而失败，锁不住接线。
+  write(TRANSFORMERS_ENTRY, `
+export const env = {};
+export async function pipeline(kind, model, opts) {
+  globalThis.__engineSeen = { kind, model, opts, cacheDir: env.cacheDir, remote: env.allowRemoteModels };
+  const data = Float32Array.from([0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, -0.5]);
+  return async () => ({ dims: [2, 4], data });
+}
+`);
+  mkdirSync(join(dir, "node_modules", "onnxruntime-node", "bin", "napi-v6", platform, arch), { recursive: true });
+  return dir;
+}
+
+test("memory_runtime verify：用配置里的模型与用户级缓存目录去验（issue #387 的复现面）", async () => {
+  // #387 现场：embedModelCacheDir 默认空串 → 交给 transformers.js 时等于「不设 env.cacheDir」，
+  // 它转去找包内相对路径，于是真实嵌入好好的、面板 verify 却报 functional: false。
+  // 这条用例走的就是面板那条路（tool → verifyPayload → defaultEngine），且刻意不设
+  // embedModelCacheDir、把 localEmbedModel 设成非默认值：两只参数都必须真的走到 engine。
+  delete globalThis.__engineSeen;
+  const runtimeDir = mkdtempSync(join(tmpdir(), "mneme-tool-verify-"));
+  makePayloadWithFakeEntry(runtimeDir);
+  const { registered } = setup(undefined, { runtimeDir, localEmbedModel: "Xenova/bge-m3" });
+  const tool = registered.find((t) => t.name === "memory_runtime");
+
+  const result = await tool.execute({ action: "verify" });
+  assert.equal(result.status, "verified", result.reason ?? result.summary);
+  assert.match(result.summary, /Runtime verified/);
+  assert.equal(globalThis.__engineSeen.cacheDir, defaultModelCacheDir(), "不填 embedModelCacheDir 时该去用户级默认目录");
+  assert.equal(globalThis.__engineSeen.opts.cache_dir, defaultModelCacheDir());
+  assert.equal(globalThis.__engineSeen.model, "Xenova/bge-m3", "验的必须是配置里那个嵌入模型");
+  assert.equal(globalThis.__engineSeen.remote, false, "验证过程不许触网");
+  delete globalThis.__engineSeen;
 });
