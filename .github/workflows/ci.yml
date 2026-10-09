@@ -52,6 +52,15 @@ jobs:
       - name: Run full tests
         run: npm test
 
+      # 跨包平价锁：mneme-memory（mcp/ 独立包）的 MCP_TOOLS 必须与插件 src/tools.js
+      # 逐字一致。该用例住在仓库根 test/，而根目录没有 package.json（v0.7.x 的编排壳
+      # 已删除），所以 npm test 的 glob 永远扫不到它——不显式跑就等于没有这道闸。
+      # 只跑一个代表分片：纯文本比对，与 OS / Node 版本无关。
+      - name: Cross-package MCP parity (mneme-memory ↔ src/tools.js)
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 24
+        working-directory: .
+        run: node --test test/mcp-package.test.js
+
       # 覆盖率与 Codecov 只跑一个代表分片，避免四份重复上报
       - name: Coverage (ubuntu + node 24 shard only)
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 24
